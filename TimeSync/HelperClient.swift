@@ -6,7 +6,7 @@ enum HelperClientError: LocalizedError {
     case notRegistered
     case registrationFailed(String)
     case xpcUnavailable(String)
-    case setFailed(String)
+    case operationFailed(String)
 
     var errorDescription: String? {
         switch self {
@@ -14,7 +14,7 @@ enum HelperClientError: LocalizedError {
             return "Helper is not installed. Install it from the Helper tab in Settings."
         case .registrationFailed(let s): return "Helper registration failed: \(s)"
         case .xpcUnavailable(let s):     return "Helper is not reachable: \(s)"
-        case .setFailed(let s):          return "Helper refused to set time: \(s)"
+        case .operationFailed(let s):    return "Helper operation failed: \(s)"
         }
     }
 }
@@ -24,7 +24,7 @@ final class HelperClient: ObservableObject {
     @Published private(set) var status: SMAppService.Status = .notRegistered
     @Published private(set) var lastError: String?
     @Published private(set) var helperVersion: String?
-    @Published private(set) var lastSync: (date: Date, appliedOffsetMs: Double)?
+    @Published private(set) var lastMakestepAt: Date?
 
     private let service = SMAppService.daemon(plistName: HelperConstants.launchdPlistName)
     private var connection: NSXPCConnection?
@@ -83,26 +83,25 @@ final class HelperClient: ObservableObject {
         }
     }
 
-    /// Set the system clock to `referenceTime`. Records the offset that was just applied
-    /// (system - reference, in ms, *before* the sync) so the UI can show "applied -34 ms".
-    func syncSystemClock(to referenceTime: Date) async throws {
+    /// Tell the helper to run `chronyc makestep`. chrony then immediately steps the
+    /// system clock to its current best estimate of true time across all sources.
+    func runChronyMakestep() async throws {
         guard status == .enabled else {
             throw HelperClientError.notRegistered
         }
-        let preSyncOffsetMs = Date().timeIntervalSince(referenceTime) * 1000.0
         let proxy = try makeProxy()
         try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
-            proxy.setSystemTime(unixSeconds: referenceTime.timeIntervalSince1970) { ok, errMsg in
+            proxy.runChronyMakestep { ok, errMsg in
                 if ok {
                     Task { @MainActor in
-                        self.lastSync = (Date(), preSyncOffsetMs)
+                        self.lastMakestepAt = Date()
                         self.lastError = nil
                     }
                     cont.resume()
                 } else {
                     let msg = errMsg ?? "unknown error"
                     Task { @MainActor in self.lastError = msg }
-                    cont.resume(throwing: HelperClientError.setFailed(msg))
+                    cont.resume(throwing: HelperClientError.operationFailed(msg))
                 }
             }
         }

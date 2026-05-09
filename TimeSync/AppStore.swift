@@ -8,7 +8,7 @@ final class AppStore: ObservableObject {
     @Published var preferences: Preferences
     @Published var ntpState = SourceState()
     @Published var gpsState = SourceState()
-    @Published var lastSyncError: String?
+    @Published var lastActionError: String?
 
     // chrony's view of system clock offset — much more stable than per-source
     // single-sample offsets because chrony filters across all its sources.
@@ -19,7 +19,7 @@ final class AppStore: ObservableObject {
     @Published var helperStatus: SMAppService.Status = .notRegistered
     @Published var helperLastError: String?
     @Published var helperVersion: String?
-    @Published var lastHelperSync: HelperSyncRecord?
+    @Published var lastMakestepAt: Date?
 
     let helperClient = HelperClient()
     let chronyMonitor = ChronyMonitor()
@@ -28,7 +28,6 @@ final class AppStore: ObservableObject {
     private var gpsdClient: GPSDClient?
     private var ntpPollTask: Task<Void, Never>?
     private var prefsBag = Set<AnyCancellable>()
-    private var lastAutoSyncAt: Date?
 
     init() {
         self.preferences = Preferences.load()
@@ -50,10 +49,7 @@ final class AppStore: ObservableObject {
         helperClient.$status.receive(on: DispatchQueue.main).assign(to: &$helperStatus)
         helperClient.$lastError.receive(on: DispatchQueue.main).assign(to: &$helperLastError)
         helperClient.$helperVersion.receive(on: DispatchQueue.main).assign(to: &$helperVersion)
-        helperClient.$lastSync
-            .map { tuple in tuple.map { HelperSyncRecord(at: $0.date, appliedOffsetMs: $0.appliedOffsetMs) } }
-            .receive(on: DispatchQueue.main)
-            .assign(to: &$lastHelperSync)
+        helperClient.$lastMakestepAt.receive(on: DispatchQueue.main).assign(to: &$lastMakestepAt)
 
         // chrony is now the canonical source of "what's the system clock offset?".
         // Mirror its publishers so views can read store.chronyTracking directly.
@@ -69,12 +65,12 @@ final class AppStore: ObservableObject {
 
     func installHelper() {
         do { try helperClient.install() }
-        catch { lastSyncError = error.localizedDescription }
+        catch { lastActionError = error.localizedDescription }
     }
 
     func uninstallHelper() {
         do { try helperClient.uninstall() }
-        catch { lastSyncError = error.localizedDescription }
+        catch { lastActionError = error.localizedDescription }
     }
 
     func openHelperSettings() {
@@ -83,7 +79,21 @@ final class AppStore: ObservableObject {
 
     func pingHelper() async {
         do { _ = try await helperClient.ping() }
-        catch { lastSyncError = error.localizedDescription }
+        catch { lastActionError = error.localizedDescription }
+    }
+
+    /// Force chrony to immediately step the system clock to its current best estimate.
+    /// Useful after the clock has drifted far enough that chrony loses quorum and
+    /// falls back to local stratum 8 — `makestep` jolts it out of that state.
+    func chronyMakestep() async {
+        do {
+            try await helperClient.runChronyMakestep()
+            lastActionError = nil
+            // Pull a fresh chronyc tracking right after so the UI reflects the step.
+            await chronyMonitor.pollOnce()
+        } catch {
+            lastActionError = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+        }
     }
 
     // MARK: - NTP polling
@@ -113,7 +123,6 @@ final class AppStore: ObservableObject {
             ntpState.roundTripMs = result.roundTripDelayMs
             ntpState.lastUpdate = Date()
             ntpState.connected = true
-            await maybeAutoSync(source: .ntp)
         } catch {
             ntpState.status = .error(shortMessage(error))
             ntpState.connected = false
@@ -160,14 +169,12 @@ final class AppStore: ObservableObject {
         gpsState.lastUpdate = Date()
         switch update.kind {
         case .fix(let gpsTime, let receivedAt):
-            // gpsd timestamps the GPS-second mark in the TPV `time` field. `receivedAt`
-            // is when the JSON line arrived in our TCP buffer — which adds gpsd's parsing
-            // latency plus our TCP receive latency on top of the underlying NMEA latency.
-            // Net accuracy without PPS: ~50-200 ms. Fine for FT8.
+            // Single-sample, noisy: TCP arrival time is a poor proxy for the GPS-second
+            // mark (gpsd parsing + TCP coalescing add 50-200 ms of variable latency).
+            // Use this only as a sanity check; the headline drift comes from chrony.
             let offset = receivedAt.timeIntervalSince(gpsTime) * 1000.0
             gpsState.status = .ok
             gpsState.offsetMs = offset
-            Task { await maybeAutoSync(source: .gps) }
         case .noFix:
             gpsState.status = .noFix
             gpsState.offsetMs = nil
@@ -178,6 +185,7 @@ final class AppStore: ObservableObject {
 
     func refreshAll() async {
         await pollNTPOnce()
+        await chronyMonitor.pollOnce()
     }
 
     // MARK: - Derived
@@ -225,64 +233,5 @@ final class AppStore: ObservableObject {
     private func shortMessage(_ error: Error) -> String {
         let s = String(describing: error)
         return s.count > 80 ? String(s.prefix(80)) + "…" : s
-    }
-
-    // MARK: - Sync (uses the privileged helper)
-
-    /// User-initiated. Picks the best available source per preferences and pushes
-    /// the corrected time to the helper.
-    func syncNow() async {
-        do {
-            let target = try chooseSyncTarget()
-            try await helperClient.syncSystemClock(to: target)
-            lastSyncError = nil
-            // Re-poll NTP after sync so the UI reflects the new (small) residual offset.
-            await pollNTPOnce()
-        } catch {
-            lastSyncError = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
-        }
-    }
-
-    /// Auto-sync hook called after each successful NTP poll or GPS fix.
-    private func maybeAutoSync(source: TimeSource) async {
-        guard preferences.autoSyncEnabled else { return }
-        guard helperClient.status == .enabled else { return }
-        // Throttle: don't auto-sync more often than `autoSyncMinIntervalSeconds`.
-        if let last = lastAutoSyncAt,
-           Date().timeIntervalSince(last) < Double(preferences.autoSyncMinIntervalSeconds) {
-            return
-        }
-        // Only sync from the source that just updated, AND only if it matches the preferred source.
-        switch preferences.preferredSource {
-        case .ntp where source != .ntp: return
-        case .gps where source != .gps: return
-        default: break
-        }
-        guard let offset = (source == .gps) ? gpsState.offsetMs : ntpState.offsetMs else { return }
-        guard abs(offset) > Double(preferences.warnThresholdMs) else { return }
-
-        do {
-            let target = Date().addingTimeInterval(-offset / 1000.0)
-            try await helperClient.syncSystemClock(to: target)
-            lastAutoSyncAt = Date()
-            lastSyncError = nil
-        } catch {
-            lastSyncError = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
-        }
-    }
-
-    private func chooseSyncTarget() throws -> Date {
-        // Prefer GPS if available and we're not specifically NTP-locked.
-        let preferGPS = preferences.preferredSource != .ntp
-        if preferGPS, let off = gpsState.offsetMs, gpsState.status == .ok {
-            return Date().addingTimeInterval(-off / 1000.0)
-        }
-        if let off = ntpState.offsetMs, ntpState.status == .ok {
-            return Date().addingTimeInterval(-off / 1000.0)
-        }
-        if let off = gpsState.offsetMs, gpsState.status == .ok {
-            return Date().addingTimeInterval(-off / 1000.0)
-        }
-        throw HelperClientError.setFailed("No source has a fresh offset to sync from")
     }
 }

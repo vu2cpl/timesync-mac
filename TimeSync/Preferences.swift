@@ -24,13 +24,14 @@ struct Preferences: Codable, Equatable {
     var preferredSource: TimeSource = .best
     var warnThresholdMs: Int = 100
     var showOffsetInMenuBar: Bool = true
-    var autoSyncEnabled: Bool = false
-    var autoSyncMinIntervalSeconds: Int = 60
 
     // Legacy fields, kept only so old Preferences.v1 blobs decode. Unused now —
-    // gpsd owns the serial port and picks baud automatically.
+    // gpsd owns the serial port and picks baud automatically; chrony owns clock
+    // discipline so the helper-driven auto-sync was removed.
     var gpsPort: String = ""
     var gpsBaud: Int = 4800
+    var autoSyncEnabled: Bool = false
+    var autoSyncMinIntervalSeconds: Int = 60
 
     static let defaultsKey = "TimeSync.Preferences.v1"
 

@@ -46,11 +46,13 @@ TimeSync.app/                              ← main app (com.vu2cpl.TimeSync)
 
 Note: the app no longer opens the GPS serial device itself — `gpsd` owns the port and the app is one of its TCP clients. This lets the same Mac simultaneously feed GPS time to chrony (via shared memory) AND show GPS state in TimeSync's menubar, without two processes fighting for `/dev/cu.usbserial-*`. See [`server/`](server/) for the chrony + gpsd LaunchDaemons.
 
-**Sync path:** user clicks "Sync Now" → `AppStore.syncNow` picks the best source per `preferredSource` pref → computes target time = `Date() - offset` → `HelperClient.syncSystemClock(to:)` → XPC to helper → helper validates the caller's `SecCode` against `identifier "com.vu2cpl.TimeSync"` → `settimeofday(2)`. Auto-sync (opt-in, off by default) hooks into `applyGPSUpdate`/`pollNTPOnce` and only fires when drift exceeds `warnThresholdMs`, throttled by `autoSyncMinIntervalSeconds`.
+**Step Clock path:** user clicks "Step Clock" → `AppStore.chronyMakestep` → `HelperClient.runChronyMakestep` → XPC to helper → helper validates the caller's `SecCode` against `identifier "com.vu2cpl.TimeSync"` → spawns `/opt/homebrew/bin/chronyc makestep`. Chrony then immediately steps the system clock to its current best estimate. Used to recover when chrony has lost quorum and fallen back to local stratum 8.
 
-**Helper installation:** `HelperClient.install()` calls `SMAppService.daemon(plistName:).register()`. First call shows a system admin prompt. The helper survives main-app restarts (launchd manages its lifecycle); only re-register when the helper plist or binary changes.
+The helper's protocol still includes a legacy `setSystemTime(unixSeconds:)` method for backward compat with older app builds — but the current app never calls it. **Don't add new direct-clock-setting code paths**: chrony is the sole owner of clock discipline. If you need a different chrony command exposed (e.g. `burst`, `cyclelogs`), add it to `TimeSyncHelperProtocol` alongside `runChronyMakestep`.
 
-**State propagation:** `HelperClient` is its own `ObservableObject`, but `AppStore` mirrors its `@Published` properties (`status`, `lastError`, `helperVersion`, `lastSync`) via Combine `assign(to:)` so SwiftUI views only need to observe `AppStore`.
+**Helper installation:** `HelperClient.install()` calls `SMAppService.daemon(plistName:).register()`. First call shows a system admin prompt. The helper survives main-app restarts (launchd manages its lifecycle); only re-register when the helper plist or binary changes. After updating the helper binary in a new build, run `sudo launchctl kickstart -k system/com.vu2cpl.TimeSync.Helper` to force launchd to relaunch with the new binary (or just bump `CFBundleVersion` in `TimeSyncHelper/Helper-Info.plist`).
+
+**State propagation:** `HelperClient` is its own `ObservableObject`, but `AppStore` mirrors its `@Published` properties (`status`, `lastError`, `helperVersion`, `lastMakestepAt`) via Combine `assign(to:)` so SwiftUI views only need to observe `AppStore`.
 
 ## Code signing — required, not optional
 

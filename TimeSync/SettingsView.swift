@@ -21,27 +21,23 @@ struct SettingsView: View {
 
     private var generalTab: some View {
         Form {
-            Picker("Preferred source", selection: $store.preferences.preferredSource) {
+            Picker("Diagnostic source", selection: $store.preferences.preferredSource) {
                 ForEach(TimeSource.allCases) { src in
                     Text(src.label).tag(src)
                 }
             }
+            .help("Which per-source single-sample offset to fall back to if chrony is unavailable. Chrony's filtered view is always used when present.")
             Toggle("Show offset in menu bar", isOn: $store.preferences.showOffsetInMenuBar)
             Stepper(value: $store.preferences.refreshIntervalSeconds, in: 5...3600, step: 5) {
-                Text("Refresh every \(store.preferences.refreshIntervalSeconds)s")
+                Text("Refresh NTP every \(store.preferences.refreshIntervalSeconds)s")
             }
             Stepper(value: $store.preferences.warnThresholdMs, in: 10...10_000, step: 10) {
                 Text("Warn when drift > \(store.preferences.warnThresholdMs) ms")
             }
-            Section("Auto-sync") {
-                Toggle("Sync clock automatically when drift exceeds threshold",
-                       isOn: $store.preferences.autoSyncEnabled)
-                    .help("Requires the privileged helper to be installed.")
-                Stepper(value: $store.preferences.autoSyncMinIntervalSeconds, in: 10...3600, step: 10) {
-                    Text("Don't auto-sync more often than every \(store.preferences.autoSyncMinIntervalSeconds)s")
-                }
-                .disabled(!store.preferences.autoSyncEnabled)
-            }
+            Text("Clock discipline is owned by chrony. The helper exposes only chronyc makestep, used by the Step Clock button when chrony loses quorum.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .padding(.top, 6)
         }
     }
 
@@ -55,12 +51,9 @@ struct SettingsView: View {
                 LabeledContent("Helper version", value: v)
             }
 
-            if let last = store.lastHelperSync {
-                LabeledContent("Last sync") {
-                    Text(String(format: "%@ — applied %+.1f ms",
-                                last.at.formatted(date: .omitted, time: .standard),
-                                last.appliedOffsetMs))
-                }
+            if let last = store.lastMakestepAt {
+                LabeledContent("Last makestep",
+                               value: last.formatted(date: .omitted, time: .standard))
             }
 
             HStack {
@@ -88,7 +81,7 @@ struct SettingsView: View {
                     .font(.caption)
             }
 
-            Text("The helper is a small launchd daemon that runs as root. It accepts connections only from this app (verified by code signature) and exposes a single XPC method: set the system clock.")
+            Text("The helper is a small launchd daemon that runs as root. It accepts connections only from this app (verified by code signature) and exposes one XPC method: run `chronyc makestep`. The legacy setSystemTime method is still in the protocol for backward compat but no longer called by this app — chrony owns clock discipline.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .padding(.top, 6)

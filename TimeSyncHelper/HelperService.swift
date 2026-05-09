@@ -53,6 +53,45 @@ final class HelperListenerDelegate: NSObject, NSXPCListenerDelegate {
 
 /// Implements the XPC interface. Runs as root inside the helper process.
 final class HelperService: NSObject, TimeSyncHelperProtocol {
+
+    /// Path to the chronyc binary. Hardcoded for Homebrew on Apple Silicon; would need
+    /// to be configurable for Intel-Mac (`/usr/local/bin/chronyc`) or non-Homebrew installs.
+    private static let chronycPath = "/opt/homebrew/bin/chronyc"
+
+    func runChronyMakestep(with reply: @escaping (Bool, String?) -> Void) {
+        guard FileManager.default.fileExists(atPath: Self.chronycPath) else {
+            reply(false, "chronyc not found at \(Self.chronycPath) — is chrony installed?")
+            return
+        }
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: Self.chronycPath)
+        process.arguments = ["makestep"]
+        let outPipe = Pipe()
+        let errPipe = Pipe()
+        process.standardOutput = outPipe
+        process.standardError = errPipe
+        process.terminationHandler = { proc in
+            let outData = outPipe.fileHandleForReading.readDataToEndOfFile()
+            let errData = errPipe.fileHandleForReading.readDataToEndOfFile()
+            if proc.terminationStatus == 0 {
+                let output = String(data: outData, encoding: .utf8)?
+                    .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                NSLog("TimeSyncHelper: chronyc makestep -> \(output)")
+                reply(true, nil)
+            } else {
+                let msg = String(data: errData, encoding: .utf8)?
+                    .trimmingCharacters(in: .whitespacesAndNewlines) ?? "(no stderr)"
+                NSLog("TimeSyncHelper: chronyc makestep failed (\(proc.terminationStatus)): \(msg)")
+                reply(false, "chronyc exit \(proc.terminationStatus): \(msg)")
+            }
+        }
+        do {
+            try process.run()
+        } catch {
+            reply(false, "spawn chronyc failed: \(error.localizedDescription)")
+        }
+    }
+
     func setSystemTime(unixSeconds: Double, with reply: @escaping (Bool, String?) -> Void) {
         guard unixSeconds.isFinite, unixSeconds > 0 else {
             reply(false, "Invalid time value")

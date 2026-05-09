@@ -42,12 +42,12 @@ struct MenuBarContent: View {
                 }
 
                 Button {
-                    Task { await store.syncNow() }
+                    Task { await store.chronyMakestep() }
                 } label: {
-                    Label("Sync Now", systemImage: "checkmark.circle")
+                    Label("Step Clock", systemImage: "bolt.horizontal")
                 }
-                .disabled(!canSyncNow)
-                .help(syncNowHelp)
+                .disabled(store.helperStatus != .enabled)
+                .help(stepClockHelp)
 
                 Spacer()
 
@@ -213,10 +213,8 @@ struct MenuBarContent: View {
                 VStack(alignment: .leading, spacing: 1) {
                     Text("Helper installed")
                         .font(.caption)
-                    if let last = store.lastHelperSync {
-                        Text(String(format: "Last sync: %@ (applied %+.1f ms)",
-                                    formatRelative(last.at, now: nowTick),
-                                    last.appliedOffsetMs))
+                    if let last = store.lastMakestepAt {
+                        Text("Last makestep: \(formatRelative(last, now: nowTick))")
                             .font(.caption2)
                             .foregroundStyle(.secondary)
                     }
@@ -245,7 +243,7 @@ struct MenuBarContent: View {
                 .foregroundStyle(.secondary)
         }
 
-        if let err = store.helperLastError ?? store.lastSyncError {
+        if let err = store.helperLastError ?? store.lastActionError {
             Text(err)
                 .font(.caption2)
                 .foregroundStyle(.red)
@@ -253,18 +251,10 @@ struct MenuBarContent: View {
         }
     }
 
-    private var canSyncNow: Bool {
-        store.helperStatus == .enabled
-            && (store.ntpState.offsetMs != nil || store.gpsState.offsetMs != nil)
-    }
-
-    private var syncNowHelp: String {
+    private var stepClockHelp: String {
         if store.helperStatus != .enabled {
             return "Install the helper first (one-time admin auth)."
         }
-        if store.ntpState.offsetMs == nil && store.gpsState.offsetMs == nil {
-            return "Waiting for an NTP or GPS reading."
-        }
-        return "Set the system clock to the current reference time."
+        return "Run `chronyc makestep` — forces chrony to immediately step the system clock to its current best estimate. Useful when chrony has fallen back to local stratum 8."
     }
 }
