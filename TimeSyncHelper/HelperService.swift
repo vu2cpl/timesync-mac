@@ -54,17 +54,26 @@ final class HelperListenerDelegate: NSObject, NSXPCListenerDelegate {
 /// Implements the XPC interface. Runs as root inside the helper process.
 final class HelperService: NSObject, TimeSyncHelperProtocol {
 
-    /// Path to the chronyc binary. Hardcoded for Homebrew on Apple Silicon; would need
-    /// to be configurable for Intel-Mac (`/usr/local/bin/chronyc`) or non-Homebrew installs.
-    private static let chronycPath = "/opt/homebrew/bin/chronyc"
+    /// Candidate paths for the chronyc binary. Apple Silicon brew lives at
+    /// /opt/homebrew, Intel brew at /usr/local. We try each in order.
+    private static let chronycCandidates = [
+        "/opt/homebrew/bin/chronyc",
+        "/usr/local/bin/chronyc",
+    ]
+
+    private static func findChronyc() -> String? {
+        chronycCandidates.first { FileManager.default.fileExists(atPath: $0) }
+    }
 
     func runChronyMakestep(with reply: @escaping (Bool, String?) -> Void) {
-        guard FileManager.default.fileExists(atPath: Self.chronycPath) else {
-            reply(false, "chronyc not found at \(Self.chronycPath) — is chrony installed?")
+        guard let chronycPath = Self.findChronyc() else {
+            reply(false,
+                  "chrony is not installed. Run server/install.sh from the timesync-mac repo "
+                + "(https://github.com/vu2cpl/timesync-mac) to set up chrony + gpsd.")
             return
         }
         let process = Process()
-        process.executableURL = URL(fileURLWithPath: Self.chronycPath)
+        process.executableURL = URL(fileURLWithPath: chronycPath)
         process.arguments = ["makestep"]
         let outPipe = Pipe()
         let errPipe = Pipe()
@@ -73,16 +82,16 @@ final class HelperService: NSObject, TimeSyncHelperProtocol {
         process.terminationHandler = { proc in
             let outData = outPipe.fileHandleForReading.readDataToEndOfFile()
             let errData = errPipe.fileHandleForReading.readDataToEndOfFile()
+            let stderr = String(data: errData, encoding: .utf8)?
+                .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
             if proc.terminationStatus == 0 {
                 let output = String(data: outData, encoding: .utf8)?
                     .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
                 NSLog("TimeSyncHelper: chronyc makestep -> \(output)")
                 reply(true, nil)
             } else {
-                let msg = String(data: errData, encoding: .utf8)?
-                    .trimmingCharacters(in: .whitespacesAndNewlines) ?? "(no stderr)"
-                NSLog("TimeSyncHelper: chronyc makestep failed (\(proc.terminationStatus)): \(msg)")
-                reply(false, "chronyc exit \(proc.terminationStatus): \(msg)")
+                NSLog("TimeSyncHelper: chronyc makestep failed (\(proc.terminationStatus)): \(stderr)")
+                reply(false, Self.friendlyError(exitCode: proc.terminationStatus, stderr: stderr))
             }
         }
         do {
@@ -90,6 +99,19 @@ final class HelperService: NSObject, TimeSyncHelperProtocol {
         } catch {
             reply(false, "spawn chronyc failed: \(error.localizedDescription)")
         }
+    }
+
+    /// Translate raw chronyc errors into messages a user can act on.
+    private static func friendlyError(exitCode: Int32, stderr: String) -> String {
+        // chronyc emits "506 Cannot talk to daemon" when chronyd isn't running or
+        // its socket isn't where chronyc expects it. By far the most common cause
+        // for a fresh installer who hasn't run server/install.sh yet.
+        if stderr.contains("Cannot talk to daemon") || stderr.contains("506") {
+            return "chronyd is not running. Run server/install.sh from the timesync-mac repo "
+                 + "(https://github.com/vu2cpl/timesync-mac) to install and start it."
+        }
+        // Anything else: surface the raw stderr so we have something to debug.
+        return "chronyc exit \(exitCode): \(stderr)"
     }
 
     func setSystemTime(unixSeconds: Double, with reply: @escaping (Bool, String?) -> Void) {

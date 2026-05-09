@@ -62,32 +62,30 @@ cd timesync-mac
 ./server/install.sh
 ```
 
-The script does:
+The installer is interactive — it will:
 
-1. `brew install gpsd chrony`
-2. Installs `/opt/homebrew/etc/chrony.conf` and `/opt/homebrew/etc/gpsd-wrapper.sh`
-3. Creates `/var/log/chrony` etc.
-4. Drops two LaunchDaemons in `/Library/LaunchDaemons/`:
-   - `com.vu2cpl.gpsd` — owns the GPS serial port, decodes NMEA / UBX
-   - `com.vu2cpl.chrony` — uses gpsd's SHM segment as a stratum-1 source, plus the public pool, and serves time on UDP/123
-5. Bootstraps both daemons (you'll be prompted for your admin password)
+1. Detect your Homebrew prefix (Apple Silicon `/opt/homebrew` or Intel `/usr/local`)
+2. `brew install gpsd chrony` if not already
+3. **Scan `/dev/cu.usb*` and list GPS-candidate devices**, ask which one is yours
+4. **Ask for the baud rate** (default 4800)
+5. **Sniff the device** for 3 s to verify NMEA actually arrives at that combination
+6. **Detect your LAN subnet** from `en0`'s IP, ask which CIDR to allow chrony clients from
+7. Render customized copies of `chrony.conf`, `gpsd-wrapper.sh`, and the two LaunchDaemon plists
+8. Install them to the right paths under `<brew>/etc/` and `/Library/LaunchDaemons/` (sudo prompt)
+9. Bootstrap both daemons via `launchctl`
+10. Print `chronyc tracking` so you can confirm it converged
 
 Verify:
 
 ```bash
-chronyc tracking      # should show stratum 2-3, sub-10ms offset
-chronyc sources       # should list GPS + 7 internet sources
-sntp 192.168.1.157    # adjust IP — should respond
+chronyc tracking      # stratum 2-3, sub-10 ms offset
+chronyc sources       # GPS + 7-ish internet sources
+sntp <your-mac-IP>    # downstream test
 ```
 
-### You will need to edit two files
+### Re-running the installer
 
-The shipped configs assume my LAN (`192.168.1.0/24`) and my GPS device path (`/dev/cu.usbserial-D306Y9DQ`). Edit before installing:
-
-- **`server/chrony.conf`** — change the `allow 192.168.1.0/24` line to match your subnet.
-- **`server/gpsd-wrapper.sh`** — change the `DEV=` line to your GPS's `/dev/cu.*` path. Find it with `ls /dev/cu.usbserial-*` after plugging the GPS in.
-
-If you use a different GPS baud rate, also adjust `BAUD=` in `gpsd-wrapper.sh`.
+Safe to re-run — `bootout`/`bootstrap` cycles the daemons cleanly. Use it whenever you swap GPS hardware, change LAN subnet, etc.
 
 ### Pointing your other PCs at the Mac
 

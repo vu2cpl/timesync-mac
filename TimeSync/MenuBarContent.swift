@@ -10,6 +10,8 @@ struct MenuBarContent: View {
         VStack(alignment: .leading, spacing: 12) {
             header
 
+            setupBanner   // EmptyView when chrony is reachable
+
             Divider()
 
             chronySection
@@ -46,7 +48,7 @@ struct MenuBarContent: View {
                 } label: {
                     Label("Step Clock", systemImage: "bolt.horizontal")
                 }
-                .disabled(store.helperStatus != .enabled)
+                .disabled(store.helperStatus != .enabled || store.chronyTracking == nil)
                 .help(stepClockHelp)
 
                 Spacer()
@@ -248,6 +250,50 @@ struct MenuBarContent: View {
         if store.helperStatus != .enabled {
             return "Install the helper first (one-time admin auth)."
         }
+        if store.chronyTracking == nil {
+            return "chrony is not running. Set it up with server/install.sh."
+        }
         return "Run `chronyc makestep` — forces chrony to immediately step the system clock to its current best estimate. Useful when chrony has fallen back to local stratum 8."
+    }
+
+    // MARK: - Setup banner (chrony not installed / not running)
+
+    /// Shown at the top of the popover when chrony is unreachable. The most
+    /// common cause for fresh installers is that they downloaded the .app but
+    /// never ran server/install.sh — point them there explicitly.
+    @ViewBuilder
+    private var setupBanner: some View {
+        if store.chronyTracking == nil, let err = store.chronyError {
+            VStack(spacing: 0) {
+                Divider()
+                HStack(alignment: .top, spacing: 8) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .foregroundStyle(.orange)
+                        .font(.title3)
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(err.localizedCaseInsensitiveContains("not found")
+                             ? "chrony is not installed"
+                             : "chrony is not running")
+                            .font(.headline)
+                        Text("This Mac's clock isn't being externally disciplined right now. Run server/install.sh from the timesync-mac repo to set up chrony + gpsd.")
+                            .font(.caption)
+                            .fixedSize(horizontal: false, vertical: true)
+                        Button("Open setup instructions") {
+                            if let url = URL(string: "https://github.com/vu2cpl/timesync-mac#install--server-stack-gpsd--chrony") {
+                                NSWorkspace.shared.open(url)
+                            }
+                        }
+                        .controlSize(.small)
+                        .padding(.top, 2)
+                    }
+                }
+                .padding(8)
+                .background(
+                    RoundedRectangle(cornerRadius: 8)
+                        .fill(Color.orange.opacity(0.12))
+                )
+                .padding(.top, 8)
+            }
+        }
     }
 }
