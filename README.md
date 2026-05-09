@@ -105,12 +105,18 @@ w32tm /resync
 
 ## Architecture (short version)
 
-- **TimeSync.app** (this repo, Swift / SwiftUI menu-bar app) — purely a viewer. Talks to gpsd over TCP/2947 (JSON), polls `chronyc tracking` every 5s for the real drift number, sends NTP queries via UDP. Zero clock-setting code paths in the app itself.
-- **TimeSyncHelper** (small launchd daemon, runs as root) — exposes one XPC method: `runChronyMakestep`. The "Step Clock" button calls this. Validates the calling app's code signature so only the real signed TimeSync.app can talk to it.
-- **chrony** (server-side) — disciplines the system clock from GPS (when fix is good) and internet pool. Serves UDP/123 to the LAN.
-- **gpsd** (server-side) — owns the GPS serial port; writes time samples to a SHM segment chrony reads.
+Four processes, clear separation of concerns:
 
-For more depth see [`CLAUDE.md`](CLAUDE.md), which is the in-repo development guide.
+- **TimeSync.app** (Swift / SwiftUI menu-bar app, runs as you) — purely a viewer. Talks to gpsd over TCP/2947 (JSON), polls `chronyc tracking` every 5s for the canonical drift number, sends NTP queries via UDP. Never touches the system clock directly.
+- **TimeSyncHelper** (small launchd daemon, runs as root) — exposes one XPC method: `runChronyMakestep`. The "Step Clock" button calls this. Validates the calling app's code signature so only the real signed TimeSync.app can talk to it.
+- **chrony** (server-side) — disciplines the system clock from GPS (when fix is good) and internet pool. Picks the best available source automatically. Serves UDP/123 to the LAN.
+- **gpsd** (server-side) — owns the GPS serial port; writes time samples to a shared-memory segment chrony reads, also serves JSON on TCP/2947 for everything else.
+
+For the long version with diagrams, design rationale, failure modes, and the security model: **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)**.
+
+For chrony specifically — what it is, walking through our config line by line, operational commands, common scenarios and how to read the output: **[docs/CHRONY.md](docs/CHRONY.md)**.
+
+For the in-repo developer guide (build instructions, code layout, the two macOS gotchas we paid for): **[CLAUDE.md](CLAUDE.md)**.
 
 ## Source build
 
