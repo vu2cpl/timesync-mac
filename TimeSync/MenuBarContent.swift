@@ -12,6 +12,10 @@ struct MenuBarContent: View {
 
             Divider()
 
+            chronySection
+
+            Divider()
+
             sourceSection(
                 title: "NTP",
                 state: store.ntpState,
@@ -152,6 +156,49 @@ struct MenuBarContent: View {
         if dt < 60 { return String(format: "%.0fs ago", dt) }
         if dt < 3600 { return String(format: "%.0fm ago", dt / 60) }
         return String(format: "%.1fh ago", dt / 3600)
+    }
+
+    // MARK: - chrony section
+
+    @ViewBuilder
+    private var chronySection: some View {
+        if let chrony = store.chronyTracking {
+            HStack(alignment: .top, spacing: 10) {
+                Circle()
+                    .fill(Color.blue)
+                    .frame(width: 8, height: 8)
+                    .padding(.top, 6)
+                VStack(alignment: .leading, spacing: 2) {
+                    HStack {
+                        Text("chrony").font(.headline)
+                        Spacer()
+                        Text(formatOffset(chrony.systemAheadOfReferenceMs))
+                            .font(.system(.body, design: .monospaced))
+                    }
+                    Text("Reference: \(chrony.referenceName) (stratum \(chrony.stratum))")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Text(String(format: "RMS offset: %.1f ms · Root delay: %.0f ms",
+                                chrony.rmsOffsetMs, chrony.rootDelayMs))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Text(String(format: "Frequency: %+.2f ppm · update %.0fs · %@",
+                                chrony.frequencyPpm,
+                                chrony.updateIntervalSeconds,
+                                chrony.leapStatus))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+        } else if let err = store.chronyError {
+            Text("chrony: \(err)")
+                .font(.caption)
+                .foregroundStyle(.orange)
+        } else {
+            Text("chrony: starting…")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
     }
 
     // MARK: - Helper section

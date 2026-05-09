@@ -37,9 +37,14 @@ TimeSync.app/                              ← main app (com.vu2cpl.TimeSync)
 └── Contents/Library/LaunchDaemons/com.vu2cpl.TimeSync.Helper.plist
 ```
 
-**Data flow on the main side:** `GPSDClient` (TCP to `gpsd` on `localhost:2947`, JSON line-protocol, sends `?WATCH={"enable":true,"json":true}`) → parses TPV / SKY messages → emits `GPSUpdate { fix | noFix }` → `AppStore.applyGPSUpdate` → `@Published gpsState` → SwiftUI. `NTPClient` runs in parallel (pure-Swift SNTPv4 over UDP/123 via `Network.framework`), polls every `refreshIntervalSeconds`.
+**Data flow on the main side:**
+- `ChronyMonitor` (subprocess invocation of `chronyc -c tracking` every 5s) → parses CSV → publishes `ChronyTracking`. **This is the canonical "what is my system clock offset?" source for the UI** — chrony filters across all its sources (GPS via SHM, internet pool) and gives a stable, smooth number. Single-sample per-source offsets (next two below) are for diagnostics only.
+- `GPSDClient` (TCP to `gpsd` on `localhost:2947`, JSON line-protocol) → parses TPV / SKY messages → emits `GPSUpdate { fix | noFix }` → `AppStore.applyGPSUpdate` → `@Published gpsState`. The single-sample offset here is noisy (TCP/JSON arrival latency); don't rely on it for the headline drift.
+- `NTPClient` (pure-Swift SNTPv4 over UDP/123 via `Network.framework`) — polls every `refreshIntervalSeconds`. Same caveat: per-poll offset is single-sample and noisy.
 
-Note: the app no longer opens the GPS serial device itself — `gpsd` owns the port and the app is one of its TCP clients. This means the same Mac can simultaneously feed GPS time to chrony (via shared memory) AND show GPS state in TimeSync's menubar, without two processes fighting for `/dev/cu.usbserial-*`. See [`server/`](server/) for the chrony + gpsd LaunchDaemons.
+`AppStore.bestOffsetMs` returns chrony's view first; falls back to per-source if chrony is unreachable.
+
+Note: the app no longer opens the GPS serial device itself — `gpsd` owns the port and the app is one of its TCP clients. This lets the same Mac simultaneously feed GPS time to chrony (via shared memory) AND show GPS state in TimeSync's menubar, without two processes fighting for `/dev/cu.usbserial-*`. See [`server/`](server/) for the chrony + gpsd LaunchDaemons.
 
 **Sync path:** user clicks "Sync Now" → `AppStore.syncNow` picks the best source per `preferredSource` pref → computes target time = `Date() - offset` → `HelperClient.syncSystemClock(to:)` → XPC to helper → helper validates the caller's `SecCode` against `identifier "com.vu2cpl.TimeSync"` → `settimeofday(2)`. Auto-sync (opt-in, off by default) hooks into `applyGPSUpdate`/`pollNTPOnce` and only fires when drift exceeds `warnThresholdMs`, throttled by `autoSyncMinIntervalSeconds`.
 

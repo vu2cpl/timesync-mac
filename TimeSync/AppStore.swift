@@ -10,6 +10,11 @@ final class AppStore: ObservableObject {
     @Published var gpsState = SourceState()
     @Published var lastSyncError: String?
 
+    // chrony's view of system clock offset — much more stable than per-source
+    // single-sample offsets because chrony filters across all its sources.
+    @Published var chronyTracking: ChronyTracking?
+    @Published var chronyError: String?
+
     // Mirrored from helperClient so views update without nested-observable plumbing.
     @Published var helperStatus: SMAppService.Status = .notRegistered
     @Published var helperLastError: String?
@@ -17,6 +22,7 @@ final class AppStore: ObservableObject {
     @Published var lastHelperSync: HelperSyncRecord?
 
     let helperClient = HelperClient()
+    let chronyMonitor = ChronyMonitor()
 
     private let ntpClient = NTPClient()
     private var gpsdClient: GPSDClient?
@@ -49,8 +55,14 @@ final class AppStore: ObservableObject {
             .receive(on: DispatchQueue.main)
             .assign(to: &$lastHelperSync)
 
+        // chrony is now the canonical source of "what's the system clock offset?".
+        // Mirror its publishers so views can read store.chronyTracking directly.
+        chronyMonitor.$tracking.receive(on: DispatchQueue.main).assign(to: &$chronyTracking)
+        chronyMonitor.$lastError.receive(on: DispatchQueue.main).assign(to: &$chronyError)
+
         startNTPPolling()
         restartGPSD()
+        chronyMonitor.start()
     }
 
     // MARK: - Helper lifecycle (delegates to HelperClient)
@@ -170,7 +182,13 @@ final class AppStore: ObservableObject {
 
     // MARK: - Derived
 
+    /// The "main" drift number to display. Prefers chrony's filtered view over any
+    /// single-sample per-source offset. Falls back to per-source if chrony is
+    /// unavailable (not installed, daemon down, etc.).
     var bestOffsetMs: Double? {
+        if let chrony = chronyTracking {
+            return chrony.systemAheadOfReferenceMs
+        }
         switch preferences.preferredSource {
         case .ntp: return ntpState.offsetMs
         case .gps: return gpsState.offsetMs
