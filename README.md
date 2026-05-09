@@ -45,7 +45,7 @@ The companion `server/` directory turns your Mac into a stratum-2 NTP server for
 
 ## Install — app only
 
-1. Download `TimeSync-1.0.0.zip` from the [latest release](https://github.com/vu2cpl/timesync-mac/releases/latest).
+1. Download `TimeSync-0.1.0.zip` from the [latest release](https://github.com/vu2cpl/timesync-mac/releases/latest).
 2. Unzip, drag `TimeSync.app` to `/Applications/`.
 3. Open it. A clock icon appears in your menu bar.
 4. Click the icon → **Settings… → Helper → Install Helper…** if you want the "Step Clock" button to work. macOS will prompt you to authorize a system extension; this is the privileged daemon that lets the app run `chronyc makestep`. One-time auth.

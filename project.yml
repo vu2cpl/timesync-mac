@@ -15,9 +15,14 @@ settings:
     CODE_SIGN_IDENTITY: "Developer ID Application"
     ENABLE_HARDENED_RUNTIME: YES
     OTHER_CODE_SIGN_FLAGS: "--timestamp --options=runtime"
+    # Without this, Xcode auto-injects com.apple.security.get-task-allow (the debugger
+    # entitlement). That's fine for local dev but Apple rejects notarization for any
+    # binary that requests it. We explicitly disable injection so our entitlements
+    # files are the sole source of truth.
+    CODE_SIGN_INJECT_BASE_ENTITLEMENTS: NO
     GENERATE_INFOPLIST_FILE: NO
     PRODUCT_NAME: $(TARGET_NAME)
-    MARKETING_VERSION: "1.0.0"
+    MARKETING_VERSION: "0.1.0"
     CURRENT_PROJECT_VERSION: "1"
     ARCHS: "$(ARCHS_STANDARD)"
     ONLY_ACTIVE_ARCH: YES
