@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!--
+      No sandbox — TimeSync is a system utility that needs to:
+        - talk to gpsd over TCP/2947 (allowed under Hardened Runtime by default)
+        - send NTP queries on UDP/123 (allowed)
+        - spawn /opt/homebrew/bin/chronyc (Process; no entitlement needed)
+        - install + connect to a privileged helper via XPC (no entitlement needed)
+      All of these work under Hardened Runtime without special declarations.
+      The com.apple.security.cs.* family below are intentionally NOT set —
+      we don't want to relax DYLD checks, allow unsigned libs, etc.
+    -->
+</dict>
+</plist>
