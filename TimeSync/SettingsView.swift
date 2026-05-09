@@ -21,6 +21,12 @@ struct SettingsView: View {
 
     private var generalTab: some View {
         Form {
+            Toggle("Launch at login", isOn: Binding(
+                get: { store.launchAtLoginEnabled },
+                set: { store.setLaunchAtLogin($0) }
+            ))
+            .help("When enabled, TimeSync.app starts automatically each time you log in. Requires the app to live in /Applications. macOS will show a one-time notification the first time you turn this on.")
+
             Picker("Diagnostic source", selection: $store.preferences.preferredSource) {
                 ForEach(TimeSource.allCases) { src in
                     Text(src.label).tag(src)
@@ -39,6 +45,7 @@ struct SettingsView: View {
                 .foregroundStyle(.secondary)
                 .padding(.top, 6)
         }
+        .onAppear { store.refreshLaunchAtLogin() }
     }
 
     // MARK: - Helper

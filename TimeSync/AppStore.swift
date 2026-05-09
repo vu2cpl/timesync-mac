@@ -24,6 +24,11 @@ final class AppStore: ObservableObject {
     let helperClient = HelperClient()
     let chronyMonitor = ChronyMonitor()
 
+    /// Whether macOS will auto-launch TimeSync.app at login. Mirrors
+    /// `SMAppService.mainApp.status == .enabled`. Toggled from Settings.
+    @Published var launchAtLoginEnabled: Bool = false
+    private let loginItemService = SMAppService.mainApp
+
     private let ntpClient = NTPClient()
     private var gpsdClient: GPSDClient?
     private var ntpPollTask: Task<Void, Never>?
@@ -56,9 +61,41 @@ final class AppStore: ObservableObject {
         chronyMonitor.$tracking.receive(on: DispatchQueue.main).assign(to: &$chronyTracking)
         chronyMonitor.$lastError.receive(on: DispatchQueue.main).assign(to: &$chronyError)
 
+        refreshLaunchAtLogin()
+
         startNTPPolling()
         restartGPSD()
         chronyMonitor.start()
+    }
+
+    // MARK: - Launch at Login
+
+    /// Re-read the actual status from SMAppService. The user can flip the
+    /// state from System Settings → General → Login Items behind our back,
+    /// so we shouldn't trust our cached @Published value over too long a
+    /// period; refresh whenever Settings is opened.
+    func refreshLaunchAtLogin() {
+        launchAtLoginEnabled = (loginItemService.status == .enabled)
+    }
+
+    /// Register or unregister TimeSync.app as a Login Item. Errors surface
+    /// in `lastActionError` for the popover to show.
+    func setLaunchAtLogin(_ enabled: Bool) {
+        do {
+            if enabled {
+                try loginItemService.register()
+            } else {
+                try loginItemService.unregister()
+            }
+            lastActionError = nil
+        } catch {
+            // Common reasons this can fail:
+            //  - app launched from DerivedData / Downloads (SMAppService rejects
+            //    transient paths). Move to /Applications.
+            //  - macOS prompted user to approve and they declined.
+            lastActionError = "Launch at Login change failed: \(error.localizedDescription)"
+        }
+        refreshLaunchAtLogin()
     }
 
     // MARK: - Helper lifecycle (delegates to HelperClient)
