@@ -121,35 +121,26 @@ struct SettingsView: View {
 
     private var gpsTab: some View {
         Form {
-            HStack {
-                Picker("Port", selection: $store.preferences.gpsPort) {
-                    Text("(none)").tag("")
-                    ForEach(store.availableSerialPorts, id: \.self) { p in
-                        Text(p).tag(p)
-                    }
-                }
-                Button {
-                    store.refreshAvailableSerialPorts()
-                } label: {
-                    Image(systemName: "arrow.clockwise")
-                }
-            }
-            Picker("Baud", selection: $store.preferences.gpsBaud) {
-                ForEach([4800, 9600, 19200, 38400, 57600, 115200], id: \.self) { b in
-                    Text("\(b)").tag(b)
-                }
-            }
+            TextField("gpsd host", text: $store.preferences.gpsdHost, prompt: Text("localhost"))
+            TextField("gpsd port", value: $store.preferences.gpsdPort, format: .number.grouping(.never))
             HStack {
                 Button(store.gpsState.connected ? "Reconnect" : "Connect") {
-                    store.restartGPS()
+                    store.restartGPSD()
                 }
                 Spacer()
                 Text(store.gpsState.statusText)
                     .foregroundStyle(store.gpsState.statusColor)
             }
+            if let sats = store.gpsState.satellites {
+                LabeledContent("Satellites used", value: "\(sats)")
+            }
             if let off = store.gpsState.offsetMs {
                 LabeledContent("Last offset", value: String(format: "%+.1f ms", off))
             }
+            Text("GPS is read via gpsd over TCP. Make sure gpsd is running on the target host (`brew install gpsd`, then a LaunchDaemon — see the server/ subdir of the repo).")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .padding(.top, 6)
         }
     }
 }

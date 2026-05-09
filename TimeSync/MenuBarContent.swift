@@ -117,10 +117,10 @@ struct MenuBarContent: View {
 
     private var gpsDetailLines: [String] {
         var lines: [String] = []
-        lines.append("Port: \(store.preferences.gpsPort.isEmpty ? "(none selected)" : store.preferences.gpsPort) @ \(store.preferences.gpsBaud)")
+        lines.append("gpsd: \(store.preferences.gpsdHost):\(store.preferences.gpsdPort)")
         lines.append("Status: \(store.gpsState.statusText)")
         if let sats = store.gpsState.satellites {
-            lines.append("Satellites in view: \(sats)")
+            lines.append("Satellites used: \(sats)")
         }
         if let last = store.gpsState.lastUpdate {
             lines.append("Last fix: \(formatRelative(last, now: nowTick))")

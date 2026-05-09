@@ -8,7 +8,6 @@ final class AppStore: ObservableObject {
     @Published var preferences: Preferences
     @Published var ntpState = SourceState()
     @Published var gpsState = SourceState()
-    @Published var availableSerialPorts: [String] = []
     @Published var lastSyncError: String?
 
     // Mirrored from helperClient so views update without nested-observable plumbing.
@@ -20,21 +19,13 @@ final class AppStore: ObservableObject {
     let helperClient = HelperClient()
 
     private let ntpClient = NTPClient()
-    private var gpsReader: GPSReader?
+    private var gpsdClient: GPSDClient?
     private var ntpPollTask: Task<Void, Never>?
     private var prefsBag = Set<AnyCancellable>()
     private var lastAutoSyncAt: Date?
 
     init() {
         self.preferences = Preferences.load()
-        refreshAvailableSerialPorts()
-
-        // Auto-pick the GPS port if we recognize the FTDI serial number from prior sessions
-        if preferences.gpsPort.isEmpty {
-            if let likely = availableSerialPorts.first(where: { $0.contains("usbserial") && !$0.contains("A50285BI") }) {
-                preferences.gpsPort = likely
-            }
-        }
 
         // Persist + react to preference changes (debounce so we don't thrash on every keystroke)
         $preferences
@@ -59,7 +50,7 @@ final class AppStore: ObservableObject {
             .assign(to: &$lastHelperSync)
 
         startNTPPolling()
-        restartGPS()
+        restartGPSD()
     }
 
     // MARK: - Helper lifecycle (delegates to HelperClient)
@@ -117,29 +108,37 @@ final class AppStore: ObservableObject {
         }
     }
 
-    // MARK: - GPS
+    // MARK: - GPS (via gpsd)
 
-    func restartGPS() {
-        gpsReader?.stop()
-        gpsReader = nil
+    func restartGPSD() {
+        gpsdClient?.stop()
+        gpsdClient = nil
 
-        let port = preferences.gpsPort
-        guard !port.isEmpty else {
-            gpsState = SourceState()
-            gpsState.status = .idle
-            return
-        }
-
+        gpsState = SourceState()
         gpsState.status = .connecting
-        let reader = GPSReader(port: port, baud: Int32(preferences.gpsBaud))
-        reader.onUpdate = { [weak self] update in
+
+        let host = preferences.gpsdHost.isEmpty ? "localhost" : preferences.gpsdHost
+        let port = UInt16(clamping: preferences.gpsdPort)
+        let client = GPSDClient(host: host, port: port)
+        client.onUpdate = { [weak self] update in
             Task { @MainActor in self?.applyGPSUpdate(update) }
         }
-        do {
-            try reader.start()
-            gpsReader = reader
-        } catch {
-            gpsState.status = .error(shortMessage(error))
+        client.onConnectionChange = { [weak self] connected, errMsg in
+            Task { @MainActor in self?.applyGPSDConnection(connected: connected, error: errMsg) }
+        }
+        client.start()
+        gpsdClient = client
+    }
+
+    private func applyGPSDConnection(connected: Bool, error: String?) {
+        gpsState.connected = connected
+        if !connected {
+            // Don't blow away offsetMs immediately — UI shows "stale, last seen Xs ago".
+            if let err = error {
+                gpsState.status = .error(err)
+            } else {
+                gpsState.status = .idle
+            }
         }
     }
 
@@ -149,9 +148,10 @@ final class AppStore: ObservableObject {
         gpsState.lastUpdate = Date()
         switch update.kind {
         case .fix(let gpsTime, let receivedAt):
-            // GPS UTC corresponds (approximately) to start of the second containing the sentence.
-            // We measured `receivedAt` as the moment the '$' arrived. Without PPS, accuracy is
-            // limited to roughly the byte-transmission latency at this baud, ~10–100 ms.
+            // gpsd timestamps the GPS-second mark in the TPV `time` field. `receivedAt`
+            // is when the JSON line arrived in our TCP buffer — which adds gpsd's parsing
+            // latency plus our TCP receive latency on top of the underlying NMEA latency.
+            // Net accuracy without PPS: ~50-200 ms. Fine for FT8.
             let offset = receivedAt.timeIntervalSince(gpsTime) * 1000.0
             gpsState.status = .ok
             gpsState.offsetMs = offset
@@ -162,24 +162,9 @@ final class AppStore: ObservableObject {
         }
     }
 
-    // MARK: - Serial port enumeration
-
-    func refreshAvailableSerialPorts() {
-        let fm = FileManager.default
-        guard let entries = try? fm.contentsOfDirectory(atPath: "/dev") else {
-            availableSerialPorts = []
-            return
-        }
-        availableSerialPorts = entries
-            .filter { $0.hasPrefix("cu.") }
-            .map { "/dev/\($0)" }
-            .sorted()
-    }
-
     // MARK: - Refresh
 
     func refreshAll() async {
-        refreshAvailableSerialPorts()
         await pollNTPOnce()
     }
 
@@ -214,8 +199,8 @@ final class AppStore: ObservableObject {
         if new.ntpServer != old.ntpServer || new.refreshIntervalSeconds != old.refreshIntervalSeconds {
             startNTPPolling()
         }
-        if new.gpsPort != old.gpsPort || new.gpsBaud != old.gpsBaud {
-            restartGPS()
+        if new.gpsdHost != old.gpsdHost || new.gpsdPort != old.gpsdPort {
+            restartGPSD()
         }
     }
 

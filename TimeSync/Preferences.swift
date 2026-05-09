@@ -17,14 +17,20 @@ enum TimeSource: String, CaseIterable, Identifiable, Codable {
 
 struct Preferences: Codable, Equatable {
     var ntpServer: String = "pool.ntp.org"
-    var gpsPort: String = ""
-    var gpsBaud: Int = 4800
+    // GPS is now read via gpsd over TCP. Default localhost:2947 (gpsd's standard port).
+    var gpsdHost: String = "localhost"
+    var gpsdPort: Int = 2947
     var refreshIntervalSeconds: Int = 30
     var preferredSource: TimeSource = .best
     var warnThresholdMs: Int = 100
     var showOffsetInMenuBar: Bool = true
     var autoSyncEnabled: Bool = false
     var autoSyncMinIntervalSeconds: Int = 60
+
+    // Legacy fields, kept only so old Preferences.v1 blobs decode. Unused now —
+    // gpsd owns the serial port and picks baud automatically.
+    var gpsPort: String = ""
+    var gpsBaud: Int = 4800
 
     static let defaultsKey = "TimeSync.Preferences.v1"
 
