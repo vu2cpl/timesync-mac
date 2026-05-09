@@ -1,4 +1,5 @@
 #!/bin/bash
+# SPDX-License-Identifier: MIT
 # Regenerate TimeSync.xcodeproj from project.yml
 set -euo pipefail
 cd "$(dirname "$0")"

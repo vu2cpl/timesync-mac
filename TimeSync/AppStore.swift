@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 import Combine
 import Foundation
 import ServiceManagement

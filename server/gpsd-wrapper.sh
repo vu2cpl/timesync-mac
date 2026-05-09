@@ -1,4 +1,5 @@
 #!/bin/bash
+# SPDX-License-Identifier: MIT
 # gpsd wrapper that pre-configures the FTDI USB-serial port via stty before launching
 # gpsd. macOS's in-process tcsetattr is unreliable for FTDI (silently fails to set the
 # hardware baud rate) — stty's path through the kernel works.

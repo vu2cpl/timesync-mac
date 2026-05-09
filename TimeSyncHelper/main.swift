@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 import Foundation
 
 NSLog("TimeSyncHelper starting (mach service: \(HelperConstants.machServiceName))")

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 import Foundation
 
 /// XPC interface exposed by TimeSyncHelper. Compiled into both the main app and the helper.

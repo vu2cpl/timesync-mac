@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 import Foundation
 
 enum TimeSource: String, CaseIterable, Identifiable, Codable {

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 import Foundation
 
 /// Parsed `chronyc -c tracking` output. All offsets in our app convention:

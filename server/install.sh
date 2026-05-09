@@ -1,4 +1,5 @@
 #!/bin/bash
+# SPDX-License-Identifier: MIT
 # Interactive installer for the gpsd + chrony LaunchDaemons used by TimeSync.
 # Detects the Homebrew prefix, prompts for the GPS device and baud, sniffs to
 # verify NMEA is actually present at that combination, and writes customized
