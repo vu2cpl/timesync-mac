@@ -110,10 +110,41 @@ fi
 # ---------------------------------------------------------------------------
 # 6. Pick the LAN subnet
 # ---------------------------------------------------------------------------
-DEFAULT_SUBNET=$(ifconfig en0 2>/dev/null | awk '/inet / {print $2}' | head -1 | awk -F. '{printf "%s.%s.%s.0/24\n", $1, $2, $3}')
-DEFAULT_SUBNET=${DEFAULT_SUBNET:-192.168.1.0/24}
+# Two sources of truth, in priority order:
+#   (a) the existing chrony.conf's `allow` line  — preserves user's choice
+#       across re-runs of this script
+#   (b) the subnet of the primary interface (the one carrying the default
+#       route)  — the natural choice for a fresh install
+# We prompt with the higher-priority value and show the other in the hint
+# if they differ, so the user can spot when their network changed.
+
+EXISTING_SUBNET=""
+if [ -f "$BREW_PREFIX/etc/chrony.conf" ]; then
+    EXISTING_SUBNET=$(awk '/^allow / {print $2; exit}' "$BREW_PREFIX/etc/chrony.conf")
+fi
+
+DETECTED_SUBNET=""
+PRIMARY_IFACE=$(route -n get default 2>/dev/null | awk '/interface:/ {print $2}')
+if [ -n "$PRIMARY_IFACE" ]; then
+    PRIMARY_IP=$(ifconfig "$PRIMARY_IFACE" 2>/dev/null | awk '/inet / && $2!~/^127/ {print $2; exit}')
+    if [ -n "$PRIMARY_IP" ]; then
+        DETECTED_SUBNET=$(echo "$PRIMARY_IP" | awk -F. '{printf "%s.%s.%s.0/24\n", $1, $2, $3}')
+    fi
+fi
+
+DEFAULT_SUBNET="${EXISTING_SUBNET:-${DETECTED_SUBNET:-192.168.1.0/24}}"
+
+HINT=""
+if [ -n "$EXISTING_SUBNET" ] && [ -n "$DETECTED_SUBNET" ] && [ "$EXISTING_SUBNET" != "$DETECTED_SUBNET" ]; then
+    HINT=" (current config: $EXISTING_SUBNET, but $PRIMARY_IFACE is on $DETECTED_SUBNET)"
+elif [ -n "$EXISTING_SUBNET" ]; then
+    HINT=" (preserving from current config)"
+elif [ -n "$DETECTED_SUBNET" ]; then
+    HINT=" (detected from $PRIMARY_IFACE = $PRIMARY_IP)"
+fi
+
 echo
-read -r -p "==> LAN subnet (CIDR) chrony will accept clients from? [$DEFAULT_SUBNET]: " SUBNET
+read -r -p "==> LAN subnet (CIDR) chrony will accept clients from$HINT [$DEFAULT_SUBNET]: " SUBNET
 SUBNET=${SUBNET:-$DEFAULT_SUBNET}
 echo "    -> $SUBNET"
 
