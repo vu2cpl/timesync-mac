@@ -101,12 +101,13 @@ struct SettingsView: View {
                 Text(store.ntpState.statusText)
                     .foregroundStyle(store.ntpState.statusColor)
             }
-            if let off = store.ntpState.offsetMs {
-                LabeledContent("Last offset", value: String(format: "%+.1f ms", off))
-            }
             if let rtt = store.ntpState.roundTripMs {
                 LabeledContent("Round trip", value: String(format: "%.0f ms", rtt))
             }
+            Text("Per-source offset isn't shown — half the round trip is just network latency, not clock drift. The chrony section in the menu bar shows the actual disciplined offset.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .padding(.top, 6)
         }
     }
 
@@ -127,10 +128,7 @@ struct SettingsView: View {
             if let sats = store.gpsState.satellites {
                 LabeledContent("Satellites used", value: "\(sats)")
             }
-            if let off = store.gpsState.offsetMs {
-                LabeledContent("Last offset", value: String(format: "%+.1f ms", off))
-            }
-            Text("GPS is read via gpsd over TCP. Make sure gpsd is running on the target host (`brew install gpsd`, then a LaunchDaemon — see the server/ subdir of the repo).")
+            Text("GPS is read via gpsd over TCP. Per-sample arrival timestamps are dominated by NMEA + USB + TCP buffering latency (typically 100-500 ms without PPS), so we don't show them as a drift number — chrony filters this and exposes the real disciplined offset.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .padding(.top, 6)

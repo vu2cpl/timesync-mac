@@ -86,17 +86,10 @@ struct MenuBarContent: View {
                 .padding(.top, 6)
 
             VStack(alignment: .leading, spacing: 2) {
-                HStack {
-                    Text(title).font(.headline)
-                    Spacer()
-                    if let off = state.offsetMs {
-                        Text(formatOffset(off))
-                            .font(.system(.body, design: .monospaced))
-                            .foregroundStyle(state.offsetColor)
-                    } else {
-                        Text("—").foregroundStyle(.secondary)
-                    }
-                }
+                // No offset number here — single-sample per-source offsets are mostly
+                // transport latency (NTP RTT/2, GPS pipeline jitter), not actual drift.
+                // The chrony section above shows the only drift number worth reading.
+                Text(title).font(.headline)
                 ForEach(detailLines, id: \.self) { line in
                     Text(line)
                         .font(.caption)
