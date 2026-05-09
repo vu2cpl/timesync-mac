@@ -82,16 +82,22 @@ final class HelperService: NSObject, TimeSyncHelperProtocol {
         process.terminationHandler = { proc in
             let outData = outPipe.fileHandleForReading.readDataToEndOfFile()
             let errData = errPipe.fileHandleForReading.readDataToEndOfFile()
+            let stdout = String(data: outData, encoding: .utf8)?
+                .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
             let stderr = String(data: errData, encoding: .utf8)?
                 .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
             if proc.terminationStatus == 0 {
-                let output = String(data: outData, encoding: .utf8)?
-                    .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-                NSLog("TimeSyncHelper: chronyc makestep -> \(output)")
+                NSLog("TimeSyncHelper: chronyc makestep -> \(stdout)")
                 reply(true, nil)
             } else {
-                NSLog("TimeSyncHelper: chronyc makestep failed (\(proc.terminationStatus)): \(stderr)")
-                reply(false, Self.friendlyError(exitCode: proc.terminationStatus, stderr: stderr))
+                // chronyc emits its protocol responses ("506 Cannot talk to daemon",
+                // "501 Not authorised", etc.) to STDOUT, not stderr. Pass both streams
+                // through friendlyError so we recognise the patterns either way.
+                let combined = [stdout, stderr]
+                    .filter { !$0.isEmpty }
+                    .joined(separator: " ")
+                NSLog("TimeSyncHelper: chronyc makestep failed (\(proc.terminationStatus)): \(combined)")
+                reply(false, Self.friendlyError(exitCode: proc.terminationStatus, output: combined))
             }
         }
         do {
@@ -101,17 +107,27 @@ final class HelperService: NSObject, TimeSyncHelperProtocol {
         }
     }
 
-    /// Translate raw chronyc errors into messages a user can act on.
-    private static func friendlyError(exitCode: Int32, stderr: String) -> String {
+    /// Translate raw chronyc errors into messages a user can act on. `output` is
+    /// the combined stdout+stderr — chronyc's protocol responses (506, 501, etc.)
+    /// come out on stdout, real errno-style errors on stderr; we check both.
+    private static func friendlyError(exitCode: Int32, output: String) -> String {
         // chronyc emits "506 Cannot talk to daemon" when chronyd isn't running or
         // its socket isn't where chronyc expects it. By far the most common cause
         // for a fresh installer who hasn't run server/install.sh yet.
-        if stderr.contains("Cannot talk to daemon") || stderr.contains("506") {
+        if output.contains("Cannot talk to daemon") || output.contains("506") {
             return "chronyd is not running. Run server/install.sh from the timesync-mac repo "
                  + "(https://github.com/vu2cpl/timesync-mac) to install and start it."
         }
-        // Anything else: surface the raw stderr so we have something to debug.
-        return "chronyc exit \(exitCode): \(stderr)"
+        // 501 Not authorised — chronyd is running but the calling process can't
+        // execute the privileged command. Shouldn't happen in practice (the helper
+        // runs as root) but leave a clear message in case it does.
+        if output.contains("Not authorised") || output.contains("501") {
+            return "chrony refused the makestep request (501 Not authorised). "
+                 + "The helper isn't running as root, or chronyd's command socket "
+                 + "permissions are wrong."
+        }
+        // Anything else: surface the raw output so we have something to debug.
+        return "chronyc exit \(exitCode): \(output.isEmpty ? "(no output)" : output)"
     }
 
     func setSystemTime(unixSeconds: Double, with reply: @escaping (Bool, String?) -> Void) {
