@@ -4,7 +4,18 @@ struct MenuBarContent: View {
     @EnvironmentObject var store: AppStore
     @Environment(\.openSettings) private var openSettings
     @State private var nowTick: Date = Date()
-    private let timer = Timer.publish(every: 0.1, on: .main, in: .common).autoconnect()
+    @State private var tickTask: Task<Void, Never>?
+
+    // MenuBarExtra(.window) keeps the popover's view tree mounted even when
+    // hidden, so a Timer.publish-based ticker would burn CPU 24/7 driving
+    // re-layout for a popover nobody is looking at. Gate it on .onAppear /
+    // .onDisappear instead.
+    private static let utcFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.timeZone = TimeZone(identifier: "UTC")
+        f.dateFormat = "yyyy-MM-dd HH:mm:ss.SSS"
+        return f
+    }()
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -62,7 +73,20 @@ struct MenuBarContent: View {
         }
         .padding(14)
         .frame(width: 360)
-        .onReceive(timer) { nowTick = $0 }
+        .onAppear {
+            nowTick = Date()
+            tickTask?.cancel()
+            tickTask = Task { @MainActor in
+                while !Task.isCancelled {
+                    try? await Task.sleep(nanoseconds: 100_000_000)
+                    nowTick = Date()
+                }
+            }
+        }
+        .onDisappear {
+            tickTask?.cancel()
+            tickTask = nil
+        }
     }
 
     // MARK: - Header
@@ -130,10 +154,7 @@ struct MenuBarContent: View {
     // MARK: - Formatting
 
     private func formatUTC(_ date: Date) -> String {
-        let f = DateFormatter()
-        f.timeZone = TimeZone(identifier: "UTC")
-        f.dateFormat = "yyyy-MM-dd HH:mm:ss.SSS"
-        return f.string(from: date)
+        Self.utcFormatter.string(from: date)
     }
 
     private func formatOffset(_ ms: Double) -> String {
