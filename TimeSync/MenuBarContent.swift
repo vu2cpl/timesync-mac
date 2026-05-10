@@ -1,12 +1,22 @@
 // SPDX-License-Identifier: MIT
 
+import Combine
 import SwiftUI
 
 struct MenuBarContent: View {
     @EnvironmentObject var store: AppStore
     @Environment(\.openSettings) private var openSettings
     @State private var nowTick: Date = Date()
-    private let timer = Timer.publish(every: 0.1, on: .main, in: .common).autoconnect()
+    @State private var tickCancellable: AnyCancellable?
+
+    /// 10 Hz wall-clock formatter used by the popover header. Static so we don't
+    /// allocate a new DateFormatter per tick.
+    private static let utcFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.timeZone = TimeZone(identifier: "UTC")
+        f.dateFormat = "yyyy-MM-dd HH:mm:ss.SSS"
+        return f
+    }()
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -64,7 +74,20 @@ struct MenuBarContent: View {
         }
         .padding(14)
         .frame(width: 360)
-        .onReceive(timer) { nowTick = $0 }
+        .onAppear {
+            // The popover view tree stays mounted even when hidden under
+            // .menuBarExtraStyle(.window) — so we MUST gate the 10 Hz tick on
+            // visibility, otherwise the timer fires 24/7 and forces a full
+            // popover re-evaluation 10 times per second (≈10% baseline CPU).
+            nowTick = Date()
+            tickCancellable = Timer.publish(every: 0.1, on: .main, in: .common)
+                .autoconnect()
+                .sink { nowTick = $0 }
+        }
+        .onDisappear {
+            tickCancellable?.cancel()
+            tickCancellable = nil
+        }
     }
 
     // MARK: - Header
@@ -132,10 +155,7 @@ struct MenuBarContent: View {
     // MARK: - Formatting
 
     private func formatUTC(_ date: Date) -> String {
-        let f = DateFormatter()
-        f.timeZone = TimeZone(identifier: "UTC")
-        f.dateFormat = "yyyy-MM-dd HH:mm:ss.SSS"
-        return f.string(from: date)
+        Self.utcFormatter.string(from: date)
     }
 
     private func formatOffset(_ ms: Double) -> String {
