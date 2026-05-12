@@ -185,6 +185,14 @@ sudo mkdir -p "$BREW_PREFIX/var/run/chrony" \
               "$BREW_PREFIX/var/lib/chrony" \
               "$BREW_PREFIX/var/log/chrony"
 
+# chrony 4.x refuses to bind its Unix command socket if the containing directory
+# is more permissive than 0770 (i.e. has any read/write/exec bits for "other").
+# Brew creates /opt/homebrew/var/run/chrony as 0755, which fails that check and
+# logs "Wrong permissions on .../chrony / Disabled command socket ...". chronyc
+# then silently falls back to UDP loopback, which chronyd treats as untrusted —
+# so privileged commands like `makestep` return "501 Not authorised".
+sudo chmod 0750 "$BREW_PREFIX/var/run/chrony"
+
 # ---------------------------------------------------------------------------
 # 9. (Re)bootstrap LaunchDaemons
 # ---------------------------------------------------------------------------
