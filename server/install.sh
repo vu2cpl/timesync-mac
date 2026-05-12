@@ -181,17 +181,28 @@ sudo install -m 755 -o root -g wheel "$TMP/gpsd-wrapper.sh"       "$BREW_PREFIX/
 sudo install -m 644 -o root -g wheel "$TMP/com.vu2cpl.gpsd.plist"   /Library/LaunchDaemons/com.vu2cpl.gpsd.plist
 sudo install -m 644 -o root -g wheel "$TMP/com.vu2cpl.chrony.plist" /Library/LaunchDaemons/com.vu2cpl.chrony.plist
 
-sudo mkdir -p "$BREW_PREFIX/var/run/chrony" \
-              "$BREW_PREFIX/var/lib/chrony" \
+sudo mkdir -p "$BREW_PREFIX/var/lib/chrony" \
               "$BREW_PREFIX/var/log/chrony"
 
-# chrony 4.x refuses to bind its Unix command socket if the containing directory
-# is more permissive than 0770 (i.e. has any read/write/exec bits for "other").
-# Brew creates /opt/homebrew/var/run/chrony as 0755, which fails that check and
-# logs "Wrong permissions on .../chrony / Disabled command socket ...". chronyc
-# then silently falls back to UDP loopback, which chronyd treats as untrusted —
-# so privileged commands like `makestep` return "501 Not authorised".
-sudo chmod 0750 "$BREW_PREFIX/var/run/chrony"
+# chrony 4.x refuses to bind its Unix command socket unless its containing
+# directory passes two checks: mode no more permissive than 0770 (no bits for
+# "other") AND ownership group is GID 0 (wheel). Brew's default is
+# `drwxr-xr-x root:admin` on Apple Silicon, which fails both — chronyd logs:
+#
+#   Wrong permissions on /opt/homebrew/var/run/chrony
+#     ... or, after a partial fix ...
+#   Wrong owner of /opt/homebrew/var/run/chrony (GID != 0)
+#   Disabled command socket /opt/homebrew/var/run/chrony/chronyd.sock
+#
+# With the socket disabled, chronyc silently falls back to UDP loopback, which
+# chronyd treats as untrusted — so privileged commands like `makestep` come
+# back as "501 Not authorised". Read-only queries (tracking, sources) keep
+# working over UDP, which is why TimeSync's chrony panel displays fine while
+# Step Clock fails.
+#
+# Use `install -d` to create the directory atomically with the right mode and
+# ownership, regardless of whether brew or a previous run made it differently.
+sudo install -d -m 0750 -o root -g wheel "$BREW_PREFIX/var/run/chrony"
 
 # ---------------------------------------------------------------------------
 # 9. (Re)bootstrap LaunchDaemons
