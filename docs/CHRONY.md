@@ -34,6 +34,27 @@ Tells chrony to read SHM segment 0 (which is key `0x4e545030` — gpsd's "NTP0" 
 
 No `prefer` flag. We deliberately let chrony pick the most accurate source rather than forcing GPS. When internet is reachable, internet sources usually win (their RTT/2 is smaller than GPS's NMEA jitter). When internet drops, GPS is the only selectable source and chrony switches to it automatically. **That auto-switch is the whole point of having both.**
 
+### A GPS NTP server on your LAN (optional, and better than both)
+
+```
+server 192.168.1.2 iburst
+```
+
+If there is a PPS-disciplined stratum-1 box on your LAN — a Raspberry Pi with a GPS hat is the usual one — add it as a plain server and it will win the selection on its own merits. The numbers are not close:
+
+| Source | Typical distance from GPS truth |
+|---|---|
+| LAN stratum-1 GPS server | ~1 ms RTT, root dispersion tens of µs |
+| Internet pool server | 20–80 ms RTT, dispersion in the ms |
+| USB NMEA refclock (no PPS) | ~100 ms, jittery |
+
+Two things to get right:
+
+- **Use the IP, not a `.local` name.** mDNS is not guaranteed to have resolved when chronyd starts at boot; a name that fails to resolve is a source chrony never retries.
+- **The server's own `allow` list must cover the subnet this Mac is on.** chrony answers only sources inside an `allow` and drops everything else *silently* — no log entry, no ICMP rejection, the client simply times out forever. This bites hardest after a network change: split a flat LAN into VLANs, move the Mac to the new one, and time quietly stops arriving while every firewall rule says Allow. Diagnose from the server with `sudo chronyc clients`, which lists the addresses that actually reached it; if your Mac's subnet is missing, that is the allow list, not the network.
+
+No `prefer` here either, for the same reason as the GPS refclock: if the LAN server goes down, the pool sources take over with no config change.
+
 ### Upstream sources (fallback / sanity check)
 
 ```
