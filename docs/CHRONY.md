@@ -109,13 +109,13 @@ rtcsync
 driftfile /opt/homebrew/var/lib/chrony/drift
 logdir    /opt/homebrew/var/log/chrony
 log       measurements statistics tracking
-pidfile   /opt/homebrew/var/run/chrony/chronyd.pid
+pidfile   /var/run/chronyd.pid
 bindcmdaddress /opt/homebrew/var/run/chrony/chronyd.sock
 ```
 
 Chrony's runtime state. The two macOS-specific points worth flagging:
 
-- **`pidfile`** — we override the default `/var/run/chrony/chronyd.pid` because that directory doesn't exist as writable on macOS (it's a transient `tmpfs`). Brew's `var/run` is writable.
+- **`pidfile`** — `/var/run/chronyd.pid`, not the default `/var/run/chrony/chronyd.pid` (that subdirectory doesn't exist on macOS) and **not** brew's `var/run` either. macOS empties `/var/run` at every boot, which is exactly what a pidfile needs: a power cut can't leave a stale one behind. The earlier brew-`var/run` location survived reboots, and when the dead PID got reused after a power cut, chronyd refused to start forever (see Troubleshooting). chronyd runs as root, so `/var/run` itself is writable.
 - **`bindcmdaddress`** — same reason: the `chronyd.sock` that `chronyc` connects to needs a writable parent directory.
 
 The `log measurements statistics tracking` line creates per-event log files in `logdir/`. Useful for post-mortem analysis but they grow over time — `chronyc cyclelogs` rotates them.
@@ -293,6 +293,7 @@ After this, sources agree again within a poll cycle and chrony picks the best on
 |---|---|---|
 | `chronyc: Could not open connection to daemon` | chronyd not running, or socket dir not readable as you | `pgrep chronyd`; if missing, `sudo launchctl kickstart -k system/com.vu2cpl.chrony` |
 | GPS shows `#?` (unreachable) but gpsd is fine | SHM permissions wrong, or chrony running as wrong user | gpsd writes SHM as root; chrony must run as root too. Check `ipcs -ma | grep 4e545030` — should show `--rw-------` and `root` owner; chrony's NATTCH should be ≥1 |
+| Clock ~1 s off after a power cut; `chronyd.err` repeats `Fatal error : Another chronyd may already be running (pid=N)` every 10 s | Stale pidfile from the unclean shutdown, and macOS reused that PID for another process after boot — chronyd thinks it's already running, launchd respawns it forever. Only possible with the old brew-`var/run` pidfile location | `sudo rm /opt/homebrew/var/run/chrony/chronyd.pid` (launchd restarts it within 10 s; `makestep` fixes the clock), then move `pidfile` to `/var/run/chronyd.pid` as in the shipped config |
 | `Frequency` keeps growing without bound | System clock slewing aggressively to catch up after a step | Normal for ~24h after a `makestep`; will settle |
 | All sources marked `^x` falseticker | Clock jumped recently (often from sleep/wake or another tool) | `sudo chronyc makestep` |
 | Stratum 8 with reference `()` | Local fallback active — no real source available | If GPS attached: check with `ipcs` and gpsd logs; if internet expected: check `ping pool.ntp.org` |
