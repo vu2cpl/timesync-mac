@@ -45,8 +45,8 @@ The companion `server/` directory turns your Mac into a stratum-2 NTP server for
 
 ## Install — app only
 
-1. Download `TimeSync-0.1.0.zip` from the [latest release](https://github.com/vu2cpl/timesync-mac/releases/latest).
-2. Unzip, drag `TimeSync.app` to `/Applications/`.
+1. Download `TimeSync-<version>.zip` from the [latest release](https://github.com/vu2cpl/timesync-mac/releases/latest) (currently [v0.1.7](https://github.com/vu2cpl/timesync-mac/releases/tag/v0.1.7): `TimeSync-0.1.7.zip`, notarized, universal).
+2. Unzip (double-click in Finder, or `ditto -x -k TimeSync-<version>.zip .`), drag `TimeSync.app` to `/Applications/`.
 3. Open it. A clock icon appears in your menu bar.
 4. Click the icon → **Settings… → Helper → Install Helper…** if you want the "Step Clock" button to work. macOS will prompt you to authorize a system extension; this is the privileged daemon that lets the app run `chronyc makestep`. One-time auth.
 
@@ -54,7 +54,7 @@ That's it for menu-bar monitoring. If you don't have `chrony` running yet, the p
 
 ### Updates
 
-About 10 seconds after launch, and then once a day for as long as it keeps running, TimeSync asks GitHub whether a newer release exists. If one does, it shows the new version and its release notes: **Download** opens the release page in your browser (nothing is downloaded or installed automatically), **Skip This Version** keeps the automatic check quiet about that release, **Remind Me Later** asks again at the next daily check. Only a successful check counts towards the day: one that fails (offline, timeout, rate limit, any other error) stays silent and is tried again about an hour later, or at the next launch. Development builds (a version containing "dev") never check on their own. Turn it off with **Settings… → General → Check for updates automatically**; the **Check for Updates…** button beside it checks right away. The only request is an anonymous `GET https://api.github.com/repos/vu2cpl/timesync-mac/releases/latest` — no account or token, and nothing is sent beyond the app's name and version in the User-Agent. (In releases after v0.1.6.)
+About 10 seconds after launch, and then once a day for as long as it keeps running, TimeSync asks GitHub whether a newer release exists. If one does, it shows the new version and its release notes: **Download** opens the release page in your browser (nothing is downloaded or installed automatically), **Skip This Version** keeps the automatic check quiet about that release, **Remind Me Later** asks again at the next daily check. Only a successful check counts towards the day: one that fails (offline, timeout, rate limit, any other error) stays silent and is tried again about an hour later, or at the next launch. Development builds (a version containing "dev") never check on their own. Turn it off with **Settings… → General → Check for updates automatically**; the **Check for Updates…** button beside it checks right away. The only request is an anonymous `GET https://api.github.com/repos/vu2cpl/timesync-mac/releases/latest` — no account or token, and nothing is sent beyond the app's name and version in the User-Agent. (Since v0.1.7.)
 
 ## Install — server stack (gpsd + chrony)
 

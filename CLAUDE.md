@@ -21,6 +21,8 @@ open ~/Library/Developer/Xcode/DerivedData/TimeSync-*/Build/Products/Debug/TimeS
 
 ## Release (universal binary, signed + notarized + stapled)
 
+Latest release: **v0.1.7** (2026-10-09 — notarized, stapled, universal; the first with the update check). Download the asset back after publishing and check it before calling a release done.
+
 Notarization keychain profile is **`timesync`** (created once via `xcrun notarytool store-credentials timesync --apple-id vu2cpl@gmail.com --team-id CHVNJ85C9F`). Do not assume the default `AC_PASSWORD` name. Verify the profile exists with `xcrun notarytool history --keychain-profile timesync`.
 
 ```bash
@@ -39,19 +41,21 @@ lipo -info "$APP/Contents/MacOS/TimeSync"        # expect: x86_64 arm64
 lipo -info "$APP/Contents/MacOS/TimeSyncHelper"  # expect: x86_64 arm64
 
 # 3. Submit, staple, repack
-ditto -c -k --keepParent "$APP" /tmp/TimeSync-submit.zip
+ditto -c -k --norsrc --keepParent "$APP" /tmp/TimeSync-submit.zip
 xcrun notarytool submit /tmp/TimeSync-submit.zip --keychain-profile timesync --wait
 xcrun stapler staple "$APP"
 spctl -a -vvv "$APP"                              # expect: Notarized Developer ID, accepted
-ditto -c -k --keepParent "$APP" TimeSync-X.Y.Z.zip
+ditto -c -k --norsrc --keepParent "$APP" TimeSync-X.Y.Z.zip
+zipinfo -1 TimeSync-X.Y.Z.zip | grep -c '\._'      # expect: 0 (no AppleDouble entries)
 shasum -a 256 TimeSync-X.Y.Z.zip                  # paste into release notes
 
 # 4. Tag + GitHub release
 git tag vX.Y.Z && git push origin main && git push origin vX.Y.Z
 gh release create vX.Y.Z TimeSync-X.Y.Z.zip --title "..." --notes-file ...
+# 5. Download the asset back, check its sha256, `ditto -x -k` it, spctl it
 ```
 
-Use `ditto -c -k --keepParent`, never `zip -r` — `zip` mangles xattrs/symlinks inside .app bundles and Gatekeeper rejects the unpacked app. Staple the .app *before* the final zip, not the zip itself; otherwise users hit Apple's notary network on first launch (slow, fails offline).
+Use `ditto -c -k --norsrc --keepParent`, never `zip -r` — `zip` mangles xattrs/symlinks inside .app bundles and Gatekeeper rejects the unpacked app. `--norsrc` keeps AppleDouble `._*` entries out of the zip (v0.1.6 and earlier carried 15 of them; since v0.1.7 there are none), so a non-Apple unzipper can't drop them into the bundle and break its seal. Staple the .app *before* the final zip, not the zip itself; otherwise users hit Apple's notary network on first launch (slow, fails offline).
 
 The app is `LSUIElement = true` (no Dock icon, menubar only). To inspect runtime behavior, run the binary directly so `NSLog` goes to stderr:
 
