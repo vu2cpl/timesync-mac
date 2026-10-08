@@ -24,13 +24,27 @@
 //  - Versions compare numerically: a leading "v" is dropped, both sides are
 //    split into integers on any non-digit and compared as tuples, missing
 //    parts counting as 0 (1.10 > 1.2, v0.7.10 > 0.7.2, 2.0 == 2.0.0).
-//  - Automatic check: about 10 s after launch, at most once per 24 h, only
-//    while "Check for updates automatically" is on (default on). Silent on any
-//    failure (offline, timeout, HTTP 403 rate limit, bad JSON), and silent
-//    for a version the user chose to skip.
+//  - Automatic check: about 10 s after launch, then again from an hourly
+//    timer for as long as the app runs (these apps stay up for days or weeks).
+//    An attempt goes ahead only when "Check for updates automatically" is on
+//    (default on), 24 h have passed since the last SUCCESSFUL check, at least
+//    1 h has passed since a failed automatic attempt, and none of this
+//    checker's dialogs is open (never two at once). Silent on any failure
+//    (offline, timeout, any HTTP error including the 403 rate limit, bad
+//    JSON), and silent for a version the user chose to skip.
+//  - Success means GitHub answered HTTP 200 with JSON carrying a tag_name,
+//    whether or not that release is newer. Only a success stores the check
+//    time. A failure stores nothing, so the next launch tries again; a failed
+//    AUTOMATIC attempt also holds automatic attempts off for 1 h, kept in
+//    memory only.
+//  - Development builds never check on their own: when the version contains
+//    "dev" (any case — e.g. MacExpert's build-app.sh stamps 0.0.0-dev), there
+//    is no request at launch or from the timer. Check for Updates… still works.
 //  - Manual check (Check for Updates…): always runs and always reports — the
 //    update dialog (even for a skipped version), "You're up to date", or
-//    "Couldn't check for updates" with the reason.
+//    "Couldn't check for updates" with the reason. A manual check that fails
+//    leaves the stored time and the back-off alone; one that succeeds stores
+//    the time like any successful check.
 //  - Update dialog: release notes as plain text (trimmed to ~4000
 //    characters), buttons Download / Skip This Version / Remind Me Later.
 //  - The current version is CFBundleShortVersionString. An unbundled
@@ -39,17 +53,17 @@
 //
 // UserDefaults keys, in the app's own domain:
 //   UpdateCheck.automatic  Bool, absent = on
-//   UpdateCheck.lastCheck  seconds since 1970 of the last check GitHub answered
-//                          (a check that never reached GitHub, e.g. offline,
-//                          does not count, so the next launch tries again)
+//   UpdateCheck.lastCheck  seconds since 1970 of the last SUCCESSFUL check
+//                          (HTTP 200 with a tag_name); no failure — offline,
+//                          timeout, HTTP error, bad JSON — ever writes it
 //   UpdateCheck.skippedTag the release tag the user chose to skip
 //
 // TEST HOOK (inert unless set): the environment variable
 // UPDATE_CHECK_TEST_CURRENT_VERSION replaces the current version, so the
 // dialog can be seen against the real latest release. Quit the app, then
 //     open --env UPDATE_CHECK_TEST_CURRENT_VERSION=0.0.1 /Applications/<App>.app
-// and choose Check for Updates… (an automatic check uses it too, subject to
-// the 24 h gate).
+// and choose Check for Updates…. Automatic checks use it too, subject to the
+// 24 h gate; the "dev" rule above does not apply to it.
 
 import AppKit
 import Foundation
@@ -108,23 +122,33 @@ final class UpdateChecker {
                 return "GitHub's answer could not be read."
             }
         }
-
-        /// GitHub answered (as opposed to the request never arriving), so
-        /// the attempt counts towards the once-a-day limit.
-        var reachedGitHub: Bool {
-            switch self {
-            case .rateLimited, .noRelease, .http, .unreadable: return true
-            case .noCurrentVersion, .network: return false
-            }
-        }
     }
+
+    /// What a finished check puts on screen.
+    enum Outcome: Sendable, Equatable {
+        case silent
+        case update(Release)
+        case upToDate(Release)
+        case failed(Failure)
+    }
+
+    /// The one network request, as `fetchLatestRelease`; a test can pass a
+    /// stand-in for GitHub.
+    typealias Fetch = @Sendable (Configuration, String) async throws -> Release
 
     nonisolated static let automaticChecksKey = "UpdateCheck.automatic"
     nonisolated static let lastCheckKey = "UpdateCheck.lastCheck"
     nonisolated static let skippedTagKey = "UpdateCheck.skippedTag"
     nonisolated static let testVersionVariable = "UPDATE_CHECK_TEST_CURRENT_VERSION"
     nonisolated static let launchDelaySeconds: UInt64 = 10
+    /// The once-a-day gate, counted from the last successful check.
     nonisolated static let minimumInterval: TimeInterval = 24 * 60 * 60
+    /// The re-check timer while the app runs: one tick an hour, counted from
+    /// the end of the previous attempt, a few minutes' slack allowed.
+    nonisolated static let recheckInterval: TimeInterval = 60 * 60
+    nonisolated static let recheckTolerance: TimeInterval = 5 * 60
+    /// No automatic attempt for this long after a failed automatic attempt.
+    nonisolated static let failureBackoff: TimeInterval = 60 * 60
     nonisolated static let requestTimeout: TimeInterval = 10
     nonisolated static let notesLimit = 4000
 
@@ -132,13 +156,24 @@ final class UpdateChecker {
 
     let configuration: Configuration
     private let defaults: UserDefaults
+    private let fetch: Fetch
     private var scheduled = false
     private var checking = false
     private var reportPending = false
+    /// True while one of this checker's dialogs is on screen.
+    private(set) var dialogOpen = false
+    /// When the last automatic attempt failed (seconds since 1970). Memory
+    /// only: a relaunch starts without a back-off.
+    private(set) var lastAutomaticFailure: TimeInterval?
 
-    init(configuration: Configuration, defaults: UserDefaults = .standard) {
+    init(configuration: Configuration, defaults: UserDefaults = .standard,
+         fetch: @escaping Fetch = { configuration, currentVersion in
+             try await UpdateChecker.fetchLatestRelease(
+                 configuration: configuration, currentVersion: currentVersion)
+         }) {
         self.configuration = configuration
         self.defaults = defaults
+        self.fetch = fetch
     }
 
     // MARK: - Entry points
@@ -149,23 +184,46 @@ final class UpdateChecker {
         set { defaults.set(newValue, forKey: Self.automaticChecksKey) }
     }
 
-    /// Call once at launch: about 10 s later, checks if enabled and due.
-    /// Further calls are ignored.
+    /// Call once at launch: about 10 s later, and then every hour for as long
+    /// as the app runs, makes an automatic attempt when
+    /// `shouldCheckAutomatically` allows it. A development build (or one with
+    /// no version) gets neither. Further calls are ignored.
     func scheduleAutomaticCheck() {
         guard !scheduled else { return }
         scheduled = true
+        guard Self.automaticCheckVersion() != nil else { return }
         Task { @MainActor in
             try? await Task.sleep(nanoseconds: Self.launchDelaySeconds * 1_000_000_000)
-            guard self.automaticChecksEnabled,
-                  Self.isDue(lastCheck: self.defaults.double(forKey: Self.lastCheckKey),
-                             now: Date().timeIntervalSince1970) else { return }
-            await self.check(userInitiated: false)
+            while true {
+                await self.automaticCheckIfDue()
+                // The hourly timer. Each tick is counted from the end of the
+                // previous attempt, so a failed attempt's back-off is always
+                // over by the next tick. Tolerance only ever delays a tick.
+                do {
+                    try await Task.sleep(for: .seconds(Self.recheckInterval),
+                                         tolerance: .seconds(Self.recheckTolerance))
+                } catch {
+                    return   // cancelled
+                }
+            }
         }
     }
 
     /// Check for Updates… — always runs, always reports.
     func checkNow() {
         Task { @MainActor in await self.check(userInitiated: true) }
+    }
+
+    /// One automatic attempt, if it is allowed right now — what the launch
+    /// check and every timer tick run.
+    func automaticCheckIfDue() async {
+        guard Self.shouldCheckAutomatically(
+            enabled: automaticChecksEnabled,
+            lastSuccess: defaults.double(forKey: Self.lastCheckKey),
+            lastFailure: lastAutomaticFailure,
+            dialogOpen: dialogOpen,
+            now: Date().timeIntervalSince1970) else { return }
+        await check(userInitiated: false)
     }
 
     // MARK: - The check
@@ -183,38 +241,49 @@ final class UpdateChecker {
             reportPending = false
         }
 
-        guard let current = Self.currentVersion() else {
-            if userInitiated { presentFailure(Failure.noCurrentVersion) }
+        // A manual check compares whatever version this is, "dev" included;
+        // an automatic one never runs for a development build.
+        let version = userInitiated ? Self.currentVersion() : Self.automaticCheckVersion()
+        guard let current = version else {
+            if userInitiated { present(.failed(.noCurrentVersion), currentVersion: "") }
             return
         }
 
-        let outcome: Result<Release, Failure>
+        let result: Result<Release, Failure>
         do {
-            outcome = .success(try await Self.fetchLatestRelease(
-                configuration: configuration, currentVersion: current))
+            result = .success(try await fetch(configuration, current))
         } catch let failure as Failure {
-            outcome = .failure(failure)
+            result = .failure(failure)
         } catch {
-            outcome = .failure(.network(error.localizedDescription))
+            result = .failure(.network(error.localizedDescription))
         }
-        let report = userInitiated || reportPending
+        let outcome = record(result, currentVersion: current, automatic: !userInitiated,
+                             report: userInitiated || reportPending,
+                             now: Date().timeIntervalSince1970)
+        present(outcome, currentVersion: current)
+    }
 
-        switch outcome {
+    /// Stores what a finished check means for the throttle and says what to
+    /// show. Only a success (HTTP 200 + tag_name, newer or not) stores the
+    /// time, and it ends any back-off. A failure stores nothing, so the next
+    /// launch tries again; a failed automatic attempt starts the 1 h back-off,
+    /// in memory only. A failed manual check changes nothing at all.
+    func record(_ result: Result<Release, Failure>, currentVersion: String,
+                automatic: Bool, report: Bool, now: TimeInterval) -> Outcome {
+        switch result {
         case .success(let release):
-            defaults.set(Date().timeIntervalSince1970, forKey: Self.lastCheckKey)
-            if Self.isVersion(release.tagName, newerThan: current) {
+            defaults.set(now, forKey: Self.lastCheckKey)
+            lastAutomaticFailure = nil
+            if Self.isVersion(release.tagName, newerThan: currentVersion) {
                 if !report && defaults.string(forKey: Self.skippedTagKey) == release.tagName {
-                    return
+                    return .silent
                 }
-                presentUpdate(release, currentVersion: current)
-            } else if report {
-                presentUpToDate(currentVersion: current, latest: release)
+                return .update(release)
             }
+            return report ? .upToDate(release) : .silent
         case .failure(let failure):
-            if failure.reachedGitHub {
-                defaults.set(Date().timeIntervalSince1970, forKey: Self.lastCheckKey)
-            }
-            if report { presentFailure(failure) }
+            if automatic { lastAutomaticFailure = now }
+            return report ? .failed(failure) : .silent
         }
     }
 
@@ -249,29 +318,73 @@ final class UpdateChecker {
         return false
     }
 
-    /// Due when never checked, when 24 h have passed, or when the stored time
-    /// lies in the future (the clock was wrong when it was written — that
-    /// must not block checks until the clock catches up).
+    /// Due when never checked successfully, when 24 h have passed since the
+    /// last success, or when the stored time lies in the future (the clock
+    /// was wrong when it was written — that must not block checks until the
+    /// clock catches up).
     nonisolated static func isDue(lastCheck: TimeInterval, now: TimeInterval) -> Bool {
         if lastCheck <= 0 { return true }
         let elapsed = now - lastCheck
         return elapsed < 0 || elapsed >= minimumInterval
     }
 
-    /// CFBundleShortVersionString, unless the test hook replaces it.
+    /// The rule for every automatic attempt, at launch and on each timer
+    /// tick: the setting is on, 24 h have passed since the last successful
+    /// check, the 1 h back-off after a failed automatic attempt is over (a
+    /// failure time in the future — the clock stepped back — does not hold
+    /// it), and none of this checker's dialogs is open.
+    nonisolated static func shouldCheckAutomatically(
+        enabled: Bool, lastSuccess: TimeInterval, lastFailure: TimeInterval?,
+        dialogOpen: Bool, now: TimeInterval
+    ) -> Bool {
+        guard enabled, !dialogOpen, isDue(lastCheck: lastSuccess, now: now) else { return false }
+        if let lastFailure {
+            let elapsed = now - lastFailure
+            if elapsed >= 0 && elapsed < failureBackoff { return false }
+        }
+        return true
+    }
+
+    /// A version string that marks a development build: it contains "dev",
+    /// in any case ("0.0.0-dev", "1.2-DEV").
+    nonisolated static func isDevelopmentVersion(_ version: String) -> Bool {
+        version.range(of: "dev", options: .caseInsensitive) != nil
+    }
+
+    /// CFBundleShortVersionString, unless the test hook replaces it — what a
+    /// manual check compares against.
     nonisolated static func currentVersion(
         environment: [String: String] = ProcessInfo.processInfo.environment,
         bundle: Bundle = .main
     ) -> String? {
-        if let test = environment[testVersionVariable]?
-            .trimmingCharacters(in: .whitespacesAndNewlines), !test.isEmpty {
-            return test
+        testVersion(environment: environment) ?? bundleVersion(bundle)
+    }
+
+    /// What an automatic check compares against, or nil when automatic
+    /// checks must not run: a development build, or a build with no version.
+    /// The test hook replaces the version here too and is not subject to the
+    /// "dev" rule.
+    nonisolated static func automaticCheckVersion(
+        environment: [String: String] = ProcessInfo.processInfo.environment,
+        bundle: Bundle = .main
+    ) -> String? {
+        if let test = testVersion(environment: environment) { return test }
+        guard let version = bundleVersion(bundle), !isDevelopmentVersion(version) else {
+            return nil
         }
-        if let version = (bundle.infoDictionary?["CFBundleShortVersionString"] as? String)?
-            .trimmingCharacters(in: .whitespacesAndNewlines), !version.isEmpty {
-            return version
-        }
-        return nil
+        return version
+    }
+
+    private nonisolated static func testVersion(environment: [String: String]) -> String? {
+        guard let test = environment[testVersionVariable]?
+            .trimmingCharacters(in: .whitespacesAndNewlines), !test.isEmpty else { return nil }
+        return test
+    }
+
+    private nonisolated static func bundleVersion(_ bundle: Bundle) -> String? {
+        guard let version = (bundle.infoDictionary?["CFBundleShortVersionString"] as? String)?
+            .trimmingCharacters(in: .whitespacesAndNewlines), !version.isEmpty else { return nil }
+        return version
     }
 
     /// Release notes as plain text: line endings normalised, trimmed to
@@ -328,6 +441,12 @@ final class UpdateChecker {
         } catch {
             throw Failure.network(error.localizedDescription)
         }
+        return try release(from: data, response: response)
+    }
+
+    /// GitHub's answer → the release, or the Failure that describes it. Only
+    /// HTTP 200 whose JSON carries a non-empty tag_name is a success.
+    nonisolated static func release(from data: Data, response: URLResponse) throws -> Release {
         guard let http = response as? HTTPURLResponse else { throw Failure.unreadable }
         switch http.statusCode {
         case 200:
@@ -362,10 +481,31 @@ final class UpdateChecker {
         return alert
     }
 
+    private func present(_ outcome: Outcome, currentVersion: String) {
+        switch outcome {
+        case .silent:
+            break
+        case .update(let release):
+            presentUpdate(release, currentVersion: currentVersion)
+        case .upToDate(let release):
+            presentUpToDate(currentVersion: currentVersion, latest: release)
+        case .failed(let failure):
+            presentFailure(failure)
+        }
+    }
+
+    /// Every dialog of this checker runs through here, so `dialogOpen` is
+    /// true while one is on screen and the timer never adds a second.
+    private func runModal(_ alert: NSAlert) -> NSApplication.ModalResponse {
+        dialogOpen = true
+        defer { dialogOpen = false }
+        Self.bringAppForward()
+        return alert.runModal()
+    }
+
     private func presentUpdate(_ release: Release, currentVersion: String) {
         let alert = makeUpdateAlert(release: release, currentVersion: currentVersion)
-        Self.bringAppForward()
-        switch alert.runModal() {
+        switch runModal(alert) {
         case .alertFirstButtonReturn:
             if let page = Self.releasePage(for: release, repository: configuration.repository) {
                 NSWorkspace.shared.open(page)
@@ -373,7 +513,7 @@ final class UpdateChecker {
         case .alertSecondButtonReturn:
             defaults.set(release.tagName, forKey: Self.skippedTagKey)
         default:
-            break   // Remind Me Later: the next automatic check asks again.
+            break   // Remind Me Later: the next due automatic check (a day on) asks again.
         }
     }
 
@@ -387,8 +527,7 @@ final class UpdateChecker {
         } else {
             alert.informativeText = "\(configuration.appName) \(current) is the latest version."
         }
-        Self.bringAppForward()
-        alert.runModal()
+        _ = runModal(alert)
     }
 
     private func presentFailure(_ failure: Failure) {
@@ -396,8 +535,7 @@ final class UpdateChecker {
         alert.alertStyle = .warning
         alert.messageText = "Couldn't check for updates"
         alert.informativeText = failure.errorDescription ?? "Unknown error."
-        Self.bringAppForward()
-        alert.runModal()
+        _ = runModal(alert)
     }
 
     private static func notesView(for release: Release) -> NSView {
@@ -457,7 +595,7 @@ final class UpdateChecker {
 
         var body: some View {
             Toggle("Check for updates automatically", isOn: $enabled)
-                .help("About 10 seconds after launch, at most once a day, ask GitHub (api.github.com) whether a newer release exists. Nothing is downloaded or installed automatically.")
+                .help("About 10 seconds after launch, and once a day while the app keeps running, ask GitHub (api.github.com) whether a newer release exists. Development builds never ask on their own. Nothing is downloaded or installed automatically.")
         }
     }
 }

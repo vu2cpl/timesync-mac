@@ -118,7 +118,7 @@ Three things to know:
 2. **GPS and NTP single-sample views are diagnostic.** They're shown in the popover so you can confirm "is the GPS connected?" / "is NTP responding?" but the offset numbers from them include transport latency (NMEA + USB + TCP for GPS, RTT/2 for NTP). They're noisy and don't represent actual clock drift; we deliberately don't display the offset numbers in the UI.
 3. **The app never sets the clock directly.** Even the "Step Clock" button only asks chrony to step — the legacy `setSystemTime` XPC method is in the helper for backward compat but unused by the current app.
 
-Separate from the three streams, the app makes one HTTPS request of its own: the update check (`UpdateChecker.swift`), an anonymous `GET` of `api.github.com/repos/vu2cpl/timesync-mac/releases/latest` about 10 s after launch, at most once a day, switchable in Settings → General. It only tells the operator a newer release exists; it never downloads or installs anything.
+Separate from the three streams, the app makes one HTTPS request of its own: the update check (`UpdateChecker.swift`), an anonymous `GET` of `api.github.com/repos/vu2cpl/timesync-mac/releases/latest` about 10 s after launch and then once a day while the app runs (an hourly timer looks whether 24 h have passed since the last successful check; a failed check is retried an hour later), switchable in Settings → General. It only tells the operator a newer release exists; it never downloads or installs anything.
 
 ## Design decisions
 
