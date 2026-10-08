@@ -2,9 +2,22 @@
 
 import SwiftUI
 
+/// The per-app part of UpdateChecker.swift (that file is identical in every
+/// VU2CPL app — see its header).
+extension UpdateChecker.Configuration {
+    static let app = UpdateChecker.Configuration(
+        repository: "vu2cpl/timesync-mac", appName: "TimeSync")
+}
+
 @main
 struct TimeSyncApp: App {
     @StateObject private var store = AppStore()
+
+    init() {
+        // About 10 s from now: ask GitHub whether a newer release exists
+        // (at most once a day; off via Settings → General).
+        UpdateChecker.shared.scheduleAutomaticCheck()
+    }
 
     var body: some Scene {
         MenuBarExtra {

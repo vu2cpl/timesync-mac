@@ -118,6 +118,8 @@ Three things to know:
 2. **GPS and NTP single-sample views are diagnostic.** They're shown in the popover so you can confirm "is the GPS connected?" / "is NTP responding?" but the offset numbers from them include transport latency (NMEA + USB + TCP for GPS, RTT/2 for NTP). They're noisy and don't represent actual clock drift; we deliberately don't display the offset numbers in the UI.
 3. **The app never sets the clock directly.** Even the "Step Clock" button only asks chrony to step — the legacy `setSystemTime` XPC method is in the helper for backward compat but unused by the current app.
 
+Separate from the three streams, the app makes one HTTPS request of its own: the update check (`UpdateChecker.swift`), an anonymous `GET` of `api.github.com/repos/vu2cpl/timesync-mac/releases/latest` about 10 s after launch, at most once a day, switchable in Settings → General. It only tells the operator a newer release exists; it never downloads or installs anything.
+
 ## Design decisions
 
 ### Why chrony instead of macOS's `timed`?
@@ -190,6 +192,7 @@ The "Step Clock" button is greyed out with a tooltip explaining how to install i
 - **XPC validation:** the helper checks each incoming connection's `SecCode` against the requirement `identifier "com.vu2cpl.TimeSync"` — only the signed app can call it.
 - **Helper attack surface:** one XPC method, which spawns one specific binary (`/opt/homebrew/bin/chronyc`) with one specific argument (`makestep`). No user input is ever passed to the subprocess.
 - **Sandbox:** off. TimeSync is a system utility that needs to talk to gpsd, NTP, and chrony — all incompatible with the App Sandbox. Distribution is outside the App Store.
+- **Outbound internet:** NTP to the configured server (UDP/123) and the once-a-day update check to `api.github.com` (HTTPS, no credentials, only the app name + version in the User-Agent). Nothing else.
 
 ## Timing precision — what to expect
 

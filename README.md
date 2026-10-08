@@ -52,6 +52,10 @@ The companion `server/` directory turns your Mac into a stratum-2 NTP server for
 
 That's it for menu-bar monitoring. If you don't have `chrony` running yet, the popover will say `chrony: chronyc not found`. To get a working `chrony` setup (and turn this Mac into an NTP server for your LAN), continue below.
 
+### Updates
+
+About 10 seconds after launch, at most once a day, TimeSync asks GitHub whether a newer release exists. If one does, it shows the new version and its release notes: **Download** opens the release page in your browser (nothing is downloaded or installed automatically), **Skip This Version** keeps the automatic check quiet about that release, **Remind Me Later** asks again on a later launch. Turn it off with **Settings… → General → Check for updates automatically**; the **Check for Updates…** button beside it checks right away. The only request is an anonymous `GET https://api.github.com/repos/vu2cpl/timesync-mac/releases/latest` — no account or token, and nothing is sent beyond the app's name and version in the User-Agent. (In releases after v0.1.6.)
+
 ## Install — server stack (gpsd + chrony)
 
 Plug your GPS in via USB. Then from a Terminal:

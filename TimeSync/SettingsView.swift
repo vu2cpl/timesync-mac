@@ -42,6 +42,13 @@ struct SettingsView: View {
             Stepper(value: $store.preferences.warnThresholdMs, in: 10...10_000, step: 10) {
                 Text("Warn when drift > \(store.preferences.warnThresholdMs) ms")
             }
+            // A menu-bar-only app has no app menu, so Check for Updates…
+            // lives here, next to its setting.
+            HStack {
+                UpdateChecker.AutomaticToggle()
+                Spacer()
+                UpdateChecker.CheckButton()
+            }
             Text("Clock discipline is owned by chrony. The helper exposes only chronyc makestep, used by the Step Clock button when chrony loses quorum.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
