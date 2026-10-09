@@ -56,6 +56,8 @@ That's it for menu-bar monitoring. If you don't have `chrony` running yet, the p
 
 About 10 seconds after launch, and then once a day for as long as it keeps running, TimeSync asks GitHub whether a newer release exists. If one does, it shows the new version and its release notes: **Download** opens the release page in your browser (nothing is downloaded or installed automatically), **Skip This Version** keeps the automatic check quiet about that release, **Remind Me Later** asks again at the next daily check. Only a successful check counts towards the day: one that fails (offline, timeout, rate limit, any other error) stays silent and is tried again about an hour later, or at the next launch. Development builds (a version containing "dev") never check on their own. Turn it off with **Settings… → General → Check for updates automatically**; the **Check for Updates…** button beside it checks right away. The only request is an anonymous `GET https://api.github.com/repos/vu2cpl/timesync-mac/releases/latest` — no account or token, and nothing is sent beyond the app's name and version in the User-Agent. (Since v0.1.7.)
 
+*Unreleased — ships with the next release:* when the update window appears on its own (the automatic check) it no longer takes the keyboard or brings TimeSync forward — whatever you are typing in, in any app, keeps the keyboard — and none of its buttons is the default, so Return can never open the browser: **Download** needs a click, Esc is **Remind Me Later**. **Check for Updates…** still brings the window forward, also with no default button.
+
 ## Install — server stack (gpsd + chrony)
 
 Plug your GPS in via USB. Then from a Terminal:

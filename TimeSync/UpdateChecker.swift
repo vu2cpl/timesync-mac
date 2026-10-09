@@ -47,6 +47,13 @@
 //    the time like any successful check.
 //  - Update dialog: release notes as plain text (trimmed to ~4000
 //    characters), buttons Download / Skip This Version / Remind Me Later.
+//    No button is the default: Return never opens the browser, Download
+//    needs a click; Esc (or the close box) is Remind Me Later. It is a
+//    non-modal window, so the rest of the app keeps working while it shows.
+//    From an AUTOMATIC check it appears in front without activating the app
+//    and without taking the keyboard — someone typing (a chat line in this
+//    app, or in another app) keeps typing there. From Check for Updates… it
+//    comes forward and takes the keyboard as usual. (Manoj, 2026-10-09.)
 //  - The current version is CFBundleShortVersionString. An unbundled
 //    `swift run` build has none: a manual check says so, an automatic one
 //    stays quiet.
@@ -160,8 +167,14 @@ final class UpdateChecker {
     private var scheduled = false
     private var checking = false
     private var reportPending = false
+    private var alertOpen = false
+    /// The update window on screen, if any.
+    private(set) var updateWindow: UpdateWindow?
     /// True while one of this checker's dialogs is on screen.
-    private(set) var dialogOpen = false
+    var dialogOpen: Bool { alertOpen || updateWindow != nil }
+    /// Opens the release page (Download). A test replaces it, so no browser
+    /// opens.
+    var openURL: @MainActor (URL) -> Void = { _ = NSWorkspace.shared.open($0) }
     /// When the last automatic attempt failed (seconds since 1970). Memory
     /// only: a relaunch starts without a back-off.
     private(set) var lastAutomaticFailure: TimeInterval?
@@ -245,7 +258,9 @@ final class UpdateChecker {
         // an automatic one never runs for a development build.
         let version = userInitiated ? Self.currentVersion() : Self.automaticCheckVersion()
         guard let current = version else {
-            if userInitiated { present(.failed(.noCurrentVersion), currentVersion: "") }
+            if userInitiated {
+                present(.failed(.noCurrentVersion), currentVersion: "", takeFocus: true)
+            }
             return
         }
 
@@ -257,10 +272,12 @@ final class UpdateChecker {
         } catch {
             result = .failure(.network(error.localizedDescription))
         }
+        // Somebody asked for this result (Check for Updates…, possibly while
+        // this automatic check was in flight): it may come to the front.
+        let asked = userInitiated || reportPending
         let outcome = record(result, currentVersion: current, automatic: !userInitiated,
-                             report: userInitiated || reportPending,
-                             now: Date().timeIntervalSince1970)
-        present(outcome, currentVersion: current)
+                             report: asked, now: Date().timeIntervalSince1970)
+        present(outcome, currentVersion: current, takeFocus: asked)
     }
 
     /// Stores what a finished check means for the throttle and says what to
@@ -468,25 +485,21 @@ final class UpdateChecker {
 
     // MARK: - Dialogs
 
-    /// Built separately from showing it, so it can be rendered in a test.
-    func makeUpdateAlert(release: Release, currentVersion: String) -> NSAlert {
-        let alert = NSAlert()
-        alert.alertStyle = .informational
-        alert.messageText = "\(configuration.appName) \(release.version) is available"
-        alert.informativeText = "You have \(Self.displayVersion(currentVersion))."
-        alert.addButton(withTitle: "Download")
-        alert.addButton(withTitle: "Skip This Version")
-        alert.addButton(withTitle: "Remind Me Later").keyEquivalent = "\u{1b}"
-        alert.accessoryView = Self.notesView(for: release)
-        return alert
+    /// The update window, built separately from showing it so it can be
+    /// rendered in a test.
+    func makeUpdateWindow(release: Release, currentVersion: String) -> UpdateWindow {
+        UpdateWindow(
+            message: "\(configuration.appName) \(release.version) is available",
+            informative: "You have \(Self.displayVersion(currentVersion)).",
+            notes: Self.notesView(for: release))
     }
 
-    private func present(_ outcome: Outcome, currentVersion: String) {
+    private func present(_ outcome: Outcome, currentVersion: String, takeFocus: Bool) {
         switch outcome {
         case .silent:
             break
         case .update(let release):
-            presentUpdate(release, currentVersion: currentVersion)
+            presentUpdate(release, currentVersion: currentVersion, takeFocus: takeFocus)
         case .upToDate(let release):
             presentUpToDate(currentVersion: currentVersion, latest: release)
         case .failed(let failure):
@@ -494,26 +507,183 @@ final class UpdateChecker {
         }
     }
 
-    /// Every dialog of this checker runs through here, so `dialogOpen` is
-    /// true while one is on screen and the timer never adds a second.
+    /// "You're up to date" and "Couldn't check" — they only ever answer a
+    /// Check for Updates… the user just chose, so they are ordinary app-modal
+    /// alerts brought to the front, OK being harmless. `dialogOpen` is true
+    /// while one is up.
     private func runModal(_ alert: NSAlert) -> NSApplication.ModalResponse {
-        dialogOpen = true
-        defer { dialogOpen = false }
+        alertOpen = true
+        defer { alertOpen = false }
         Self.bringAppForward()
         return alert.runModal()
     }
 
-    private func presentUpdate(_ release: Release, currentVersion: String) {
-        let alert = makeUpdateAlert(release: release, currentVersion: currentVersion)
-        switch runModal(alert) {
-        case .alertFirstButtonReturn:
+    /// One update window at a time: a newer offer replaces one still open.
+    /// `takeFocus` is true when the user asked (Check for Updates…, or a
+    /// manual check that joined an automatic one in flight): the app comes
+    /// forward and the window becomes key. An automatic check never
+    /// activates the app and never takes key status — see UpdateWindow.
+    private func presentUpdate(_ release: Release, currentVersion: String, takeFocus: Bool) {
+        updateWindow?.close()
+        let window = makeUpdateWindow(release: release, currentVersion: currentVersion)
+        window.onChoice = { [weak self, weak window] choice in
+            guard let self else { return }
+            if let window, self.updateWindow === window { self.updateWindow = nil }
+            self.handle(choice, release: release)
+        }
+        updateWindow = window
+        window.center()
+        if takeFocus {
+            Self.bringAppForward()
+            window.makeKeyAndOrderFront(nil)
+        } else {
+            // In front of every app's windows, so a background or menu-bar
+            // app's offer is seen; but no activation and no key status, so
+            // the keyboard stays wherever the user is typing — this app's
+            // chat line or another app altogether.
+            window.orderFrontRegardless()
+        }
+    }
+
+    /// What the user's answer in the update window does.
+    private func handle(_ choice: UpdateWindow.Choice, release: Release) {
+        switch choice {
+        case .download:
             if let page = Self.releasePage(for: release, repository: configuration.repository) {
-                NSWorkspace.shared.open(page)
+                openURL(page)
             }
-        case .alertSecondButtonReturn:
+        case .skip:
             defaults.set(release.tagName, forKey: Self.skippedTagKey)
-        default:
-            break   // Remind Me Later: the next due automatic check (a day on) asks again.
+        case .later:
+            break   // the next due automatic check (a day on) asks again
+        }
+    }
+
+    /// The window that offers a newer release: Download / Skip This Version /
+    /// Remind Me Later.
+    ///
+    /// Not an NSAlert: `runModal` makes an alert the key window, so whatever
+    /// the user was typing when an automatic check fired — a chat line, a
+    /// callsign — went into the dialog, and Return pressed its default
+    /// button, Download, which opened the browser. This is an ordinary
+    /// non-modal panel instead:
+    ///  - No button is the default, so Return never opens the browser, and
+    ///    the release notes (not a button) hold the keyboard when the window
+    ///    is key, so Space cannot press a button even with Full Keyboard
+    ///    Access on. Download needs a click.
+    ///  - Esc, the close box and Cmd-W all mean Remind Me Later.
+    ///  - It does not hide when the app is in the background, and being
+    ///    non-modal it blocks none of the app's other windows.
+    /// Whether it takes the keyboard is up to the caller (`presentUpdate`).
+    final class UpdateWindow: NSPanel {
+        enum Choice: Sendable, Equatable {
+            case download, skip, later
+        }
+
+        let downloadButton: NSButton
+        let skipButton: NSButton
+        let laterButton: NSButton
+        /// Called once, with the first answer; closing the window any other
+        /// way counts as Remind Me Later.
+        var onChoice: ((Choice) -> Void)?
+
+        init(message: String, informative: String, notes: NSScrollView) {
+            downloadButton = NSButton(title: "Download", target: nil, action: nil)
+            skipButton = NSButton(title: "Skip This Version", target: nil, action: nil)
+            laterButton = NSButton(title: "Remind Me Later", target: nil, action: nil)
+            super.init(contentRect: NSRect(x: 0, y: 0, width: 580, height: 400),
+                       styleMask: [.titled, .closable], backing: .buffered, defer: false)
+            title = "Software Update"
+            isReleasedWhenClosed = false
+            hidesOnDeactivate = false     // a panel's default would hide it in the background
+            becomesKeyOnlyIfNeeded = false
+
+            downloadButton.action = #selector(download(_:))
+            skipButton.action = #selector(skip(_:))
+            laterButton.action = #selector(later(_:))
+            for button in [downloadButton, skipButton, laterButton] {
+                button.target = self
+                button.keyEquivalent = ""
+            }
+            laterButton.keyEquivalent = "\u{1b}"
+
+            let icon = NSImageView(image: NSApp.applicationIconImage)
+            icon.imageScaling = .scaleProportionallyUpOrDown
+            let heading = NSTextField(wrappingLabelWithString: message)
+            heading.font = .boldSystemFont(ofSize: NSFont.systemFontSize)
+            heading.preferredMaxLayoutWidth = 460
+            let detail = NSTextField(wrappingLabelWithString: informative)
+            detail.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
+            detail.preferredMaxLayoutWidth = 460
+
+            let content = NSView()
+            for view in [icon, heading, detail, notes, laterButton, skipButton, downloadButton] as [NSView] {
+                view.translatesAutoresizingMaskIntoConstraints = false
+                content.addSubview(view)
+            }
+            NSLayoutConstraint.activate([
+                icon.topAnchor.constraint(equalTo: content.topAnchor, constant: 20),
+                icon.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 20),
+                icon.widthAnchor.constraint(equalToConstant: 64),
+                icon.heightAnchor.constraint(equalToConstant: 64),
+                heading.topAnchor.constraint(equalTo: content.topAnchor, constant: 20),
+                heading.leadingAnchor.constraint(equalTo: icon.trailingAnchor, constant: 16),
+                heading.trailingAnchor.constraint(lessThanOrEqualTo: content.trailingAnchor, constant: -20),
+                detail.topAnchor.constraint(equalTo: heading.bottomAnchor, constant: 6),
+                detail.leadingAnchor.constraint(equalTo: heading.leadingAnchor),
+                detail.trailingAnchor.constraint(lessThanOrEqualTo: content.trailingAnchor, constant: -20),
+                notes.topAnchor.constraint(equalTo: detail.bottomAnchor, constant: 12),
+                notes.leadingAnchor.constraint(equalTo: heading.leadingAnchor),
+                notes.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -20),
+                notes.widthAnchor.constraint(equalToConstant: 460),
+                notes.heightAnchor.constraint(equalToConstant: 240),
+                downloadButton.topAnchor.constraint(equalTo: notes.bottomAnchor, constant: 20),
+                downloadButton.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -20),
+                downloadButton.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -20),
+                skipButton.trailingAnchor.constraint(equalTo: downloadButton.leadingAnchor, constant: -12),
+                skipButton.centerYAnchor.constraint(equalTo: downloadButton.centerYAnchor),
+                laterButton.trailingAnchor.constraint(equalTo: skipButton.leadingAnchor, constant: -12),
+                laterButton.centerYAnchor.constraint(equalTo: downloadButton.centerYAnchor),
+            ])
+            contentView = content
+            setContentSize(content.fittingSize)
+            initialFirstResponder = notes.documentView
+        }
+
+        @available(*, unavailable)
+        required init?(coder: NSCoder) {
+            fatalError("UpdateWindow is built in code")
+        }
+
+        @objc private func download(_ sender: Any?) { finish(.download) }
+        @objc private func skip(_ sender: Any?) { finish(.skip) }
+        @objc private func later(_ sender: Any?) { finish(.later) }
+
+        override func cancelOperation(_ sender: Any?) { finish(.later) }
+
+        /// Space with the release notes focused: AppKit's keyboard handling
+        /// sends performClick: up the responder chain, and past this panel
+        /// (which never becomes the main window) it reaches the MAIN window's
+        /// chain — where the text field of a chat line under the cursor takes
+        /// it as a click and fires its action. This window's chain ends here;
+        /// a button the user tabbed to still takes Space itself.
+        @objc func performClick(_ sender: Any?) {}
+
+        /// The close box, Cmd-W, or a newer offer replacing this one.
+        override func close() {
+            report(.later)
+            super.close()
+        }
+
+        private func finish(_ choice: Choice) {
+            report(choice)
+            close()
+        }
+
+        private func report(_ choice: Choice) {
+            guard let handler = onChoice else { return }
+            onChoice = nil
+            handler(choice)
         }
     }
 
@@ -538,7 +708,7 @@ final class UpdateChecker {
         _ = runModal(alert)
     }
 
-    private static func notesView(for release: Release) -> NSView {
+    private static func notesView(for release: Release) -> NSScrollView {
         let scroll = NSTextView.scrollableTextView()
         scroll.frame = NSRect(x: 0, y: 0, width: 460, height: 240)
         scroll.borderType = .bezelBorder
@@ -565,9 +735,10 @@ final class UpdateChecker {
         return scroll
     }
 
-    /// A menu-bar-only app (or one in the background) would otherwise put the
-    /// dialog behind whatever is in front. On macOS 14+ this is cooperative
-    /// activation: the system may decline rather than steal focus.
+    /// Only for a check the user asked for: a menu-bar-only app (or one in
+    /// the background) would otherwise put the dialog behind whatever is in
+    /// front. On macOS 14+ this is cooperative activation: the system may
+    /// decline rather than steal focus. Never called for an automatic check.
     private static func bringAppForward() {
         if #available(macOS 14.0, *) {
             NSApp.activate()
